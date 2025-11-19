@@ -69,7 +69,7 @@ export async function getBybitPerps(): Promise<BybitPerpData[]> {
     
     for (let i = 0; i < symbols.length; i += batchSize) {
       const batch = symbols.slice(i, i + batchSize);
-      const batchPromises = batch.map(async (symbol) => {
+      const batchPromises = batch.map(async (symbol: string) => {
         try {
           // 获取最新的 OI 数据（使用 5min 间隔，获取最新一条）
           const response = await axios.get(`${BYBIT_API_BASE}/v5/market/open-interest`, {
