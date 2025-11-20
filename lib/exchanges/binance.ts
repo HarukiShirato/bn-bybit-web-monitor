@@ -47,6 +47,54 @@ async function getBinanceSymbols(): Promise<{symbol: string, fundingIntervalHour
 }
 
 /**
+ * 通过资金费率历史数据推断结算间隔
+ */
+async function getBinanceFundingIntervals(symbols: string[]): Promise<Map<string, number>> {
+  const intervalMap = new Map<string, number>();
+
+  try {
+    const batchSize = 8;
+    for (let i = 0; i < symbols.length; i += batchSize) {
+      const batch = symbols.slice(i, i + batchSize);
+      const promises = batch.map(async (symbol) => {
+        try {
+          const response = await axios.get(`${BINANCE_API_BASE}/fapi/v1/fundingRate`, {
+            params: { symbol, limit: 2 },
+          });
+          const list = response.data;
+          if (Array.isArray(list) && list.length >= 2) {
+            const intervalMs = Math.abs(
+              Number(list[0].fundingTime) - Number(list[1].fundingTime)
+            );
+            const intervalHours = Math.max(
+              1,
+              Math.round(intervalMs / (1000 * 60 * 60))
+            );
+            return { symbol, intervalHours };
+          }
+        } catch (err) {
+          console.error(`获取 ${symbol} 资金费率历史失败:`, err);
+        }
+        return { symbol, intervalHours: 8 };
+      });
+
+      const results = await Promise.all(promises);
+      results.forEach(({ symbol, intervalHours }) => {
+        intervalMap.set(symbol, intervalHours);
+      });
+
+      if (i + batchSize < symbols.length) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
+  } catch (error) {
+    console.error('推断 Binance 资金间隔失败:', error);
+  }
+
+  return intervalMap;
+}
+
+/**
  * 获取 Binance 标记价格及资金费率信息
  */
 async function getBinancePremiumIndex(): Promise<Map<string, { markPrice: number; fundingRate: number; nextFundingTime: number }>> {
@@ -203,6 +251,9 @@ export async function getBinancePerps(): Promise<BinancePerpData[]> {
       getBinance24hrTicker(),
     ]);
 
+    const symbolList = symbolsData.map((item) => item.symbol);
+    const computedIntervals = await getBinanceFundingIntervals(symbolList);
+
     // 提取仅用于 OI 计算的 markPrices Map
     const markPricesForOi = new Map<string, number>();
     premiumIndexMap.forEach((value, key) => {
@@ -226,6 +277,11 @@ export async function getBinancePerps(): Promise<BinancePerpData[]> {
       const oi = openInterest.get(symbol);
       const fund = insuranceFund.get(symbol) || 0;
 
+      const intervalHours =
+        computedIntervals.get(symbol) ??
+        fundingIntervalHours ??
+        8;
+
       if (oi) {
         results.push({
           symbol,
@@ -237,7 +293,7 @@ export async function getBinancePerps(): Promise<BinancePerpData[]> {
           volume24h: tickerData.quoteVolume,
           fundingRate: premiumData.fundingRate,
           nextFundingTime: premiumData.nextFundingTime,
-          fundingIntervalHours
+          fundingIntervalHours: intervalHours
         });
       }
     }
