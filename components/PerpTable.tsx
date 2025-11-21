@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from 'recharts';
+import { useMemo, useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 
 export interface PerpData {
   symbol: string;
@@ -27,6 +27,16 @@ type SortOrder = 'asc' | 'desc';
 interface PerpTableProps {
   data: PerpData[];
 }
+
+// 按需加载图表组件，避免首屏加载 Recharts 体积
+const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
+const BarChart = dynamic(() => import('recharts').then(mod => mod.BarChart), { ssr: false });
+const Bar = dynamic(() => import('recharts').then(mod => mod.Bar), { ssr: false });
+const XAxis = dynamic(() => import('recharts').then(mod => mod.XAxis), { ssr: false });
+const YAxis = dynamic(() => import('recharts').then(mod => mod.YAxis), { ssr: false });
+const Tooltip = dynamic(() => import('recharts').then(mod => mod.Tooltip), { ssr: false });
+const ReferenceLine = dynamic(() => import('recharts').then(mod => mod.ReferenceLine), { ssr: false });
+const Cell = dynamic(() => import('recharts').then(mod => mod.Cell), { ssr: false });
 
 const Countdown = ({ targetTime }: { targetTime: number }) => {
   const [timeLeft, setTimeLeft] = useState('');
@@ -159,37 +169,42 @@ export default function PerpTable({ data }: PerpTableProps) {
   };
 
   const calculateApr = (fundingRate: number, intervalHours: number = 8) => {
-      const hours = intervalHours || 8;
-      const cyclesPerDay = hours > 0 ? 24 / hours : 3;
-      return fundingRate * cyclesPerDay * 365 * 100;
+    const hours = intervalHours || 8;
+    const cyclesPerDay = hours > 0 ? 24 / hours : 3;
+    return fundingRate * cyclesPerDay * 365 * 100;
   };
 
-  const sortedData = [...data].sort((a, b) => {
-    if (sortKey === 'none') return 0;
+  const sortedData = useMemo(() => {
+    const next = [...data];
 
-    let aVal: any;
-    let bVal: any;
+    next.sort((a, b) => {
+      if (sortKey === 'none') return 0;
 
-    if (sortKey === 'apr') {
+      let aVal: any;
+      let bVal: any;
+
+      if (sortKey === 'apr') {
         aVal = calculateApr(a.fundingRate, a.fundingIntervalHours);
         bVal = calculateApr(b.fundingRate, b.fundingIntervalHours);
-    } else {
+      } else {
         aVal = a[sortKey as keyof PerpData];
         bVal = b[sortKey as keyof PerpData];
-    }
+      }
 
-    // 处理 null 值
-    if (aVal === null || aVal === undefined) aVal = -Infinity;
-    if (bVal === null || bVal === undefined) bVal = -Infinity;
+      if (aVal === null || aVal === undefined) aVal = -Infinity;
+      if (bVal === null || bVal === undefined) bVal = -Infinity;
 
-    if (typeof aVal === 'string') {
-      return sortOrder === 'asc'
-        ? aVal.localeCompare(bVal)
-        : bVal.localeCompare(aVal);
-    }
+      if (typeof aVal === 'string') {
+        return sortOrder === 'asc'
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal);
+      }
 
-    return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
-  });
+      return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+
+    return next;
+  }, [data, sortKey, sortOrder]);
 
   const formatNumber = (num: number | null, prefix: string = '', suffix: string = '', decimals: number = 2) => {
      if (num === null || num === undefined) return '—';
