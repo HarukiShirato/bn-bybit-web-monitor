@@ -6,6 +6,15 @@ import { getBatchMarketDataForSymbols } from '@/lib/marketData';
 // 简单的进程级缓存，降低对上游 API 的压力
 const CACHE_TTL_MS = 60 * 1000; // 60s
 let cachedPerps: { data: PerpData[]; timestamp: number } | null = null;
+let cachedPerpsDateKey: string | null = null;
+
+const getDateKey = (timestamp: number) => {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 /**
  * 统一的永续合约数据接口
@@ -38,6 +47,11 @@ export interface PerpData {
 export async function GET() {
   try {
     const now = Date.now();
+    const todayKey = getDateKey(now);
+    if (cachedPerpsDateKey && cachedPerpsDateKey !== todayKey) {
+      cachedPerps = null;
+      cachedPerpsDateKey = null;
+    }
     if (cachedPerps && now - cachedPerps.timestamp < CACHE_TTL_MS) {
       return NextResponse.json(
         {
@@ -136,6 +150,7 @@ export async function GET() {
 
     // 写入缓存
     cachedPerps = { data: result, timestamp: now };
+    cachedPerpsDateKey = todayKey;
 
     return NextResponse.json({
       success: true,
