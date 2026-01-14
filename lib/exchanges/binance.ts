@@ -195,41 +195,45 @@ async function getBinanceOpenInterest(symbols: {symbol: string}[], markPrices: M
  */
 async function getBinanceInsuranceFund(symbols: {symbol: string}[]): Promise<Map<string, number>> {
   const fundMap = new Map<string, number>();
+  const symbolSet = new Set(symbols.map((item) => item.symbol));
 
   try {
-    // ?????????symbol ??????????????????????????????
-    // ?????????????????????????????????
+    // The endpoint returns the pool that the symbol belongs to.
+    // We map the pool balance to every symbol in that pool.
     const batchSize = 10;
     for (let i = 0; i < symbols.length; i += batchSize) {
       const batch = symbols.slice(i, i + batchSize);
       const promises = batch.map(async ({symbol}) => {
+        if (fundMap.has(symbol)) {
+          return null;
+        }
         try {
-          // ?????????symbol ????????????
           const response = await axios.get(`${BINANCE_API_BASE}/fapi/v1/insuranceBalance`, {
             params: { symbol }
           });
 
-          // ???????????????????????????????????????symbol ??????
-          if (response.data && response.data.assets) {
-            const usdtAsset = response.data.assets.find((a: any) => a.asset === 'USDT');
-            if (usdtAsset) {
-              const fundBalance = parseFloat(usdtAsset.marginBalance || '0');
-              return { symbol, balance: fundBalance };
-            }
-          }
-          return { symbol, balance: 0 };
+          const poolSymbols = Array.isArray(response.data?.symbols)
+            ? response.data.symbols
+            : [symbol];
+          const usdtAsset = response.data?.assets?.find((a: any) => a.asset === 'USDT');
+          const fundBalance = parseFloat(usdtAsset?.marginBalance || '0');
+          return { poolSymbols, balance: fundBalance };
         } catch (error) {
-          console.error(`?????? ${symbol} ????????????????????????:`, error);
-          return { symbol, balance: 0 };
+          console.error(`Failed to fetch Binance insurance fund for ${symbol}:`, error);
+          return { poolSymbols: [symbol], balance: 0 };
         }
       });
 
       const results = await Promise.all(promises);
       results.forEach(result => {
-        fundMap.set(result.symbol, result.balance);
+        if (!result) return;
+        result.poolSymbols
+          .filter((poolSymbol: string) => symbolSet.has(poolSymbol))
+          .forEach((poolSymbol: string) => {
+            fundMap.set(poolSymbol, result.balance);
+          });
       });
 
-      // ?????????????????????????????????????????????
       if (i + batchSize < symbols.length) {
         await new Promise(resolve => setTimeout(resolve, 200));
       }
@@ -237,7 +241,7 @@ async function getBinanceInsuranceFund(symbols: {symbol: string}[]): Promise<Map
 
     return fundMap;
   } catch (error) {
-    console.error('?????? Binance ????????????????????????:', error);
+    console.error('Failed to fetch Binance insurance fund:', error);
     return new Map();
   }
 }
