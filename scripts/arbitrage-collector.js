@@ -21,16 +21,15 @@ async function fetchEnaArbitrage() {
   try {
     const investAmount = 200000;
     const amountInWei = BigInt(investAmount) * 10n ** 18n;
-
     // 1. Market rate from KyberSwap
     const routeResp = await axios.get(
-      `https://aggregator-api.kyberswap.com/ethereum/api/v1/routes`,
+      "https://aggregator-api.kyberswap.com/ethereum/api/v1/routes",
       {
         params: {
           tokenIn: ENA_ADDRESS,
           tokenOut: SENA_ADDRESS,
           amountIn: amountInWei.toString(),
-          gasInclude: true,
+          gasInclude: "true",
         },
         headers: { "User-Agent": "Mozilla/5.0" },
         timeout: 15000,
@@ -39,7 +38,6 @@ async function fetchEnaArbitrage() {
     const summary = routeResp.data?.data?.routeSummary;
     if (!summary) { console.error("[arb] ENA: no KyberSwap route"); return null; }
     const senaReceived = Number(BigInt(summary.amountOut)) / 1e18;
-
     // 2. Official rate from Etherscan tx logs
     const txResp = await axios.get("https://api.etherscan.io/v2/api", {
       params: {
