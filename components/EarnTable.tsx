@@ -7,6 +7,7 @@ export interface EarnRate {
   apr: number;
   apr3d?: number;  // 真实 3d 平均（如有）
   apr7d?: number;  // 真实 7d 平均（如有）
+  quota?: number | null;
 }
 
 export interface FundingRate {
@@ -408,6 +409,9 @@ export default function EarnTable({ data }: EarnTableProps) {
                                         <span className={er.apr === item.bestEarnApr ? 'text-brand-accent font-semibold' : 'text-brand-text-primary'}>
                                           {formatPct(er.apr)}
                                         </span>
+                                      )}
+                                      {er.exchange === 'Binance' && er.quota != null && er.quota > 0 && (
+                                        <span className="text-[9px] text-yellow-500/70 ml-1">Q:{er.quota >= 1e6 ? (er.quota/1e6).toFixed(1)+'M' : er.quota >= 1e3 ? (er.quota/1e3).toFixed(0)+'K' : er.quota.toFixed(0)}</span>
                                       )}
                                     </div>
                                   </div>
