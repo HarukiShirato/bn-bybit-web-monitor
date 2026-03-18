@@ -104,6 +104,12 @@ async function fetchEthfiStaking() {
     let existing = {};
     try { existing = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8')); } catch {}
     const prev = existing.ETHFI_sethfi_rate;
+
+  // Save sKAITO rate for APR tracking
+  const kaitoResult = results.find(r => r && r.asset === "KAITO");
+  if (kaitoResult && kaitoResult.meta) {
+    existing.KAITO_skaito_rate = { rate: kaitoResult.meta.rate, time: Date.now() };
+  }
     let apr = 0;
 
     if (prev && prev.rate > 0 && prev.time > 0) {
@@ -166,6 +172,185 @@ async function fetchAaveStaking() {
     } catch (e) {
       console.error(`[staking] AAVE fetch failed (${RPC}): ${e.message}`);
     }
+  }
+  return null;
+}
+
+async function fetchPendleStaking() {
+  try {
+    const res = await axios.get("https://api-v2.pendle.finance/bff/v1/spendle/data", {
+      headers: {
+        "Origin": "https://app.pendle.finance",
+        "Referer": "https://app.pendle.finance/",
+      },
+      timeout: 15000,
+    });
+    const data = res.data;
+    const apr = parseFloat(data.lastEpochApr || "0");
+    if (apr > 0) {
+      const totalStaked = parseFloat(data.totalPendleStaked || "0") / 1e18;
+      console.log(`[staking] PENDLE sPENDLE APR: ${(apr * 100).toFixed(2)}% (staked: ${(totalStaked / 1e6).toFixed(2)}M PENDLE)`);
+      return {
+        asset: "PENDLE",
+        apr,
+        source: "spendle-native",
+        updatedAt: Date.now(),
+        meta: { totalStaked },
+      };
+    }
+  } catch (e) {
+    console.error("[staking] PENDLE fetch failed: " + e.message);
+  }
+  return null;
+}
+
+async function fetchSignStaking() {
+  try {
+    const RPC = "https://mainnet.base.org";
+    const headers = { "Content-Type": "application/json" };
+    const stakingContract = "0x7f3437aFb1934A823cF2EAe6279b669cf4f13711";
+    const signToken = "0x868fced65edbf0056c4163515dd840e9f287a4c3";
+
+    // getContractParameters() selector = 0xbfacd9ed
+    // Returns: (bool paused, address signToken, address nftContract, uint256 aprPrecision, uint256 standardAPR, uint256 boostedAPR, uint256 cooldownPeriod, uint256 interestReserve)
+    const [paramsRes, balRes] = await Promise.all([
+      axios.post(RPC, {
+        jsonrpc: "2.0", method: "eth_call", id: 1,
+        params: [{ to: stakingContract, data: "0xbfacd9ed" }, "latest"]
+      }, { headers, timeout: 15000 }),
+      axios.post(RPC, {
+        jsonrpc: "2.0", method: "eth_call", id: 2,
+        params: [{ to: signToken, data: "0x70a08231000000000000000000000000" + stakingContract.slice(2) }, "latest"]
+      }, { headers, timeout: 15000 }),
+    ]);
+
+    if (paramsRes.data.result && paramsRes.data.result.length > 10) {
+      const hex = paramsRes.data.result.slice(2);
+      const chunks = [];
+      for (let i = 0; i < hex.length; i += 64) chunks.push(hex.slice(i, i + 64));
+
+      if (chunks.length >= 8) {
+        const aprPrecision = Number(BigInt("0x" + chunks[3]));
+        const standardAPR = Number(BigInt("0x" + chunks[4]));
+        const cooldownPeriod = Number(BigInt("0x" + chunks[6]));
+        const totalStaked = Number(BigInt(balRes.data.result)) / 1e18;
+        const apr = standardAPR / aprPrecision;
+        const unstakingDays = Math.round(cooldownPeriod / 86400);
+
+        console.log(`[staking] SIGN staking APR: ${(apr * 100).toFixed(2)}% (staked: ${(totalStaked / 1e6).toFixed(2)}M SIGN, cooldown: ${unstakingDays}d)`);
+        return {
+          asset: "SIGN",
+          apr,
+          source: "sign-staking-base",
+          updatedAt: Date.now(),
+          meta: { totalStaked, unstakingDays },
+        };
+      }
+    }
+  } catch (e) {
+    console.error("[staking] SIGN fetch failed: " + e.message);
+  }
+  return null;
+}
+
+async function fetchKaitoStaking() {
+  try {
+    // sKAITO contract on Base: 0x548d3b444da39686d1a6f1544781d154e7cd1ef7
+    // KAITO token on Base: 0x98d0baa52b2d063e780de12f615f963fe8537553
+    const RPC = "https://mainnet.base.org";
+    const headers = { "Content-Type": "application/json" };
+    const sKAITO = "0x548d3b444da39686d1a6f1544781d154e7cd1ef7";
+    const KAITO_TOKEN = "0x98d0baa52b2d063e780de12f615f963fe8537553";
+
+    // Get KAITO balance of sKAITO contract (totalAssets)
+    const balRes = await axios.post(RPC, {
+      jsonrpc: "2.0", method: "eth_call", id: 1,
+      params: [{ to: KAITO_TOKEN,
+        data: "0x70a08231000000000000000000000000" + sKAITO.slice(2) }, "latest"]
+    }, { headers, timeout: 15000 });
+
+    // Get sKAITO totalSupply
+    const tsRes = await axios.post(RPC, {
+      jsonrpc: "2.0", method: "eth_call", id: 2,
+      params: [{ to: sKAITO,
+        data: "0x18160ddd" }, "latest"]
+    }, { headers, timeout: 15000 });
+
+    const totalAssets = parseInt(balRes.data.result, 16) / 1e18;
+    const totalSupply = parseInt(tsRes.data.result, 16) / 1e18;
+    const rate = totalAssets / totalSupply;
+
+    // Read previous rate to compute APR from rate change
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")); } catch {}
+    const prev = existing.KAITO_skaito_rate;
+    let apr = 0;
+
+    if (prev && prev.rate > 0 && prev.time > 0) {
+      const elapsed = (Date.now() - prev.time) / 1000;
+      if (elapsed > 3600) {
+        const rateChange = rate / prev.rate - 1;
+        apr = rateChange * (365.25 * 24 * 3600) / elapsed;
+      }
+    }
+
+    // Fallback: estimate from launch (Feb 2025, rate started at 1.0)
+    if (apr <= 0 || apr > 1) {
+      const monthsSinceLaunch = (Date.now() - new Date("2025-02-01").getTime()) / (30.44 * 24 * 3600 * 1000);
+      if (monthsSinceLaunch > 0) {
+        apr = (rate - 1) / monthsSinceLaunch * 12;
+      }
+    }
+
+    console.log(`[staking] KAITO sKAITO rate: ${rate.toFixed(6)}, APR: ${(apr * 100).toFixed(2)}%, staked: ${(totalAssets / 1e6).toFixed(2)}M KAITO`);
+
+    return {
+      asset: "KAITO",
+      apr,
+      source: "skaito-base-onchain",
+      updatedAt: Date.now(),
+      meta: { rate, totalStaked: totalAssets, unstakingDays: 7 },
+    };
+  } catch (e) {
+    console.error("[staking] KAITO fetch failed: " + e.message);
+  }
+  return null;
+}
+
+async function fetchSkrStaking() {
+  try {
+    // SKR (Solana Mobile Seeker) staking on Solana
+    // Inflation Program: SKRiHLtLyB8bbhcJ5HBPYMiLh9GcFLdPaSwozqLteha
+    // Staking Program: SKRskrmtL83pcL4YqLWt6iPefDqwXQWHSw9S9vz94BZ
+    // Token Mint: SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3
+    // Inflation: 10% Year 1, decays 25%/year, terminal 2%. Epoch: 48h. Unstake cooldown: 48h.
+    // APY depends on inflation rate and total staked ratio.
+    // Fetch current APY from the staking page's server function
+    const res = await axios.get("https://stake.solanamobile.com/assets/Skeleton-BbLBe1yz.js", { timeout: 15000 });
+    const js = res.data;
+
+    // Extract guardian APY from JS: apy:0.265 pattern
+    const apyMatch = js.match(/apy:\s*([\d.]+)/);
+    // Extract total supply info from the inflation page data
+    // Fallback: compute from known inflation params
+    // Year 1 inflation = 10%, staking ratio ~38% => APY ≈ 10% / 38% ≈ 26.3%
+    let apr = 0.258; // default from page stats
+    if (apyMatch) {
+      apr = parseFloat(apyMatch[1]);
+    }
+
+    if (apr > 0) {
+      console.log(`[staking] SKR staking APY: ${(apr * 100).toFixed(2)}%`);
+      return {
+        asset: "SKR",
+        apr,
+        source: "skr-solana-mobile",
+        updatedAt: Date.now(),
+        meta: { unstakingDays: 2 },
+      };
+    }
+  } catch (e) {
+    console.error("[staking] SKR fetch failed: " + e.message);
   }
   return null;
 }
@@ -290,7 +475,7 @@ async function collect() {
     console.error(`[staking] Failed to read existing data: ${e.message}`);
   }
 
-  const results = await Promise.all([fetchSkyStaking(), fetchHypeStaking(), fetchLitStaking(), fetchEthfiStaking(), fetchAaveStaking()]);
+  const results = await Promise.all([fetchSkyStaking(), fetchHypeStaking(), fetchLitStaking(), fetchEthfiStaking(), fetchAaveStaking(), fetchPendleStaking(), fetchSignStaking(), fetchSkrStaking(), fetchKaitoStaking()]);
   
   for (const r of results) {
     if (r) {
@@ -305,6 +490,12 @@ async function collect() {
   const ethfiResult = results.find(r => r && r.asset === 'ETHFI');
   if (ethfiResult && ethfiResult.meta) {
     existing.ETHFI_sethfi_rate = { rate: ethfiResult.meta.rate, time: Date.now() };
+
+  // Save sKAITO rate for APR tracking
+  const kaitoResult = results.find(r => r && r.asset === "KAITO");
+  if (kaitoResult && kaitoResult.meta) {
+    existing.KAITO_skaito_rate = { rate: kaitoResult.meta.rate, time: Date.now() };
+  }
   }
 
   // Fetch Market Caps
