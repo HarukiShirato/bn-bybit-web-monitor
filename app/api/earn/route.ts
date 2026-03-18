@@ -6,6 +6,7 @@ import { getOkxEarnProducts } from '@/lib/exchanges/okxEarn';
 import { batchGetFundingStats, getOpenInterestMap, ExchangeOI } from '@/lib/fundingAggregator';
 import { getOkxRealEarnRates } from '@/lib/okxRealEarn';
 import { getStakingRewardsMap, getStakingInfoMap, getMarketCapsFromFile } from "@/lib/stakingRewards";
+import { getArbitrageMap, ArbitrageInfo } from "@/lib/arbitrageData";
 
 // 跳过构建时预渲染，由进程级缓存 + funding 缓存 控制刷新
 export const dynamic = 'force-dynamic';
@@ -46,6 +47,7 @@ export interface CombinedEarnRow {
   marketCap: number | null;
   stakingApr: number | null;
   stakingUnstakingDays: number | null;
+  arbitrage: ArbitrageInfo | null;
 }
 
 /** 带超时的 Promise 包装 */
@@ -101,17 +103,26 @@ export async function GET() {
     for (const p of bybitProducts) addEarn(p.asset, 'Bybit', p.apr);
     for (const p of okxProducts) addEarn(p.asset, 'OKX', p.apr);
 
+    // 有原生质押但没有交易所 earn 的代币也加入列表（确保它们能显示）
+    const earlyStakingMap = await withTimeout(getStakingRewardsMap(), 10000, new Map());
+    for (const [asset] of earlyStakingMap) {
+      if (!EXCLUDED_ASSETS.has(asset) && !assetMap.has(asset)) {
+        assetMap.set(asset, new Map());
+      }
+    }
+
     const allAssets = Array.from(assetMap.keys());
     const symbols = allAssets.map(a => a + 'USDT');
 
     // 并行获取：资金费率 + OI + 市值数据 + OKX 真实收益率
-    const [fundingMap, oiMap, marketDataMap, okxRealMap, stakingMap, stakingInfoMap] = await Promise.all([
+    const [fundingMap, oiMap, marketDataMap, okxRealMap, stakingMap, stakingInfoMap, arbitrageMap] = await Promise.all([
       withTimeout(batchGetFundingStats(allAssets), 55000, new Map()),
       withTimeout(getOpenInterestMap(allAssets), 55000, new Map()),
       withTimeout(getMarketCapsFromFile(), 10000, new Map()),
       withTimeout(getOkxRealEarnRates(), 15000, new Map()),
       withTimeout(getStakingRewardsMap(), 10000, new Map()),
       withTimeout(getStakingInfoMap(), 10000, new Map()),
+      withTimeout(getArbitrageMap(), 25000, new Map()),
     ]);
 
     const rows: CombinedEarnRow[] = [];
@@ -137,14 +148,14 @@ export async function GET() {
       const fs = fundingMap.get(asset);
       const funding: FundingRate[] = [];
       if (fs) {
-        if (fs.binance3d !== 0 || fs.binance7d !== 0) {
-          funding.push({ exchange: 'Binance', apr3d: fs.binance3d, apr7d: fs.binance7d });
+        if (fs.binance3d != null || fs.binance7d != null) {
+          funding.push({ exchange: 'Binance', apr3d: fs.binance3d ?? 0, apr7d: fs.binance7d ?? 0 });
         }
-        if (fs.bybit3d !== 0 || fs.bybit7d !== 0) {
-          funding.push({ exchange: 'Bybit', apr3d: fs.bybit3d, apr7d: fs.bybit7d });
+        if (fs.bybit3d != null || fs.bybit7d != null) {
+          funding.push({ exchange: 'Bybit', apr3d: fs.bybit3d ?? 0, apr7d: fs.bybit7d ?? 0 });
         }
-        if (fs.hyperliquid3d !== 0 || fs.hyperliquid7d !== 0) {
-          funding.push({ exchange: 'Hyperliquid', apr3d: fs.hyperliquid3d, apr7d: fs.hyperliquid7d });
+        if (fs.hyperliquid3d != null || fs.hyperliquid7d != null) {
+          funding.push({ exchange: 'Hyperliquid', apr3d: fs.hyperliquid3d ?? 0, apr7d: fs.hyperliquid7d ?? 0 });
         }
       }
 
@@ -192,8 +203,8 @@ export async function GET() {
         bestFunding7d,
         bestFundingExchange3d,
         bestFundingExchange7d,
-        combined3d: Math.max(bestEarn3d, stakingMap.get(asset) ?? 0) + bestFunding3d,
-        combined7d: Math.max(bestEarn7d, stakingMap.get(asset) ?? 0) + bestFunding7d,
+        combined3d: Math.max(bestEarn3d, stakingMap.get(asset) ?? 0, arbitrageMap.get(asset)?.apr ?? 0) + bestFunding3d,
+        combined7d: Math.max(bestEarn7d, stakingMap.get(asset) ?? 0, arbitrageMap.get(asset)?.apr ?? 0) + bestFunding7d,
         coinImage: undefined,
         coinName: md?.name || undefined,
         binanceOI: oiMap.get(asset)?.binance ?? null,
@@ -201,6 +212,7 @@ export async function GET() {
         hyperliquidOI: oiMap.get(asset)?.hyperliquid ?? null,
         stakingApr: stakingMap.get(asset) ?? null,
         stakingUnstakingDays: stakingInfoMap.get(asset)?.unstakingDays ?? null,
+        arbitrage: arbitrageMap.get(asset) ?? null,
         marketCap: md?.mcap ?? null,
       });
     }

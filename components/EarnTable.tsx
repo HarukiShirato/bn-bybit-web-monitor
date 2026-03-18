@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 
 export interface EarnRate {
   exchange: string;
@@ -13,6 +13,19 @@ export interface FundingRate {
   exchange: string;
   apr3d: number;
   apr7d: number;
+}
+
+export interface ArbitrageInfo {
+  asset: string;
+  investAmount: number;
+  swapToken: string;
+  swapAmount: number;
+  redeemAmount: number;
+  profit: number;
+  apr: number;
+  redeemDays: number;
+  officialRate?: number;
+  timestamp: string;
 }
 
 export interface CombinedEarnRow {
@@ -37,6 +50,7 @@ export interface CombinedEarnRow {
   marketCap: number | null;
   stakingApr: number | null;
   stakingUnstakingDays: number | null;
+  arbitrage: ArbitrageInfo | null;
 }
 
 type SortKey = 'asset' | 'bestEarn3d' | 'bestEarn7d' | 'bestFunding3d' | 'bestFunding7d' | 'combined3d' | 'combined7d' | 'marketCap' | 'none';
@@ -51,6 +65,109 @@ const exchangeColors: Record<string, string> = {
   Bybit: 'bg-brand-info/10 text-brand-info border-brand-info/20',
   OKX: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
 };
+
+/* ── Recent Funding Bars Component ── */
+interface RecentFundingEntry { time: number; rate: number }
+interface RecentFundingData { [exchange: string]: RecentFundingEntry[] }
+
+function RecentFundingBars({ asset }: { asset: string }) {
+  const [data, setData] = useState<RecentFundingData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/recent-funding?asset=${asset}`)
+      .then(r => r.json())
+      .then(j => { if (!cancelled) setData(j.data || null); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [asset]);
+
+  if (loading) return <div className="text-xs text-brand-text-muted py-2">Loading...</div>;
+  if (!data || Object.keys(data).length === 0) return <div className="text-xs text-brand-text-muted py-2">No funding data</div>;
+
+  const exchNames: Record<string, string> = { binance: 'Binance', bybit: 'Bybit', hyperliquid: 'HL' };
+  const exchColors: Record<string, { pos: string; neg: string }> = {
+    binance: { pos: '#22c55e', neg: '#ef4444' },
+    bybit: { pos: '#3b82f6', neg: '#f97316' },
+    hyperliquid: { pos: '#a78bfa', neg: '#f472b6' },
+  };
+
+  // Format time to Beijing time (UTC+8)
+  const fmtTime = (ts: number) => {
+    const d = new Date(ts);
+    const bj = new Date(d.getTime() + 8 * 3600 * 1000);
+    const mm = String(bj.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(bj.getUTCDate()).padStart(2, '0');
+    const hh = String(bj.getUTCHours()).padStart(2, '0');
+    return `${mm}-${dd} ${hh}:00`;
+  };
+
+  // Find max absolute rate across all exchanges for scaling
+  let maxAbs = 0;
+  for (const rates of Object.values(data)) {
+    for (const r of rates) {
+      const abs = Math.abs(r.rate);
+      if (abs > maxAbs) maxAbs = abs;
+    }
+  }
+  if (maxAbs === 0) maxAbs = 0.0001;
+  const barMaxH = 32; // max bar height in px
+
+  return (
+    <div className="flex-1">
+      <div className="text-xs uppercase tracking-wider text-brand-text-secondary mb-2">Recent Funding Rates</div>
+      <div className="space-y-3">
+        {Object.entries(data).filter(([, rates]) => rates.length > 0).map(([exch, rates]) => (
+          <div key={exch}>
+            <div className="text-[10px] text-brand-text-muted mb-1">{exchNames[exch] || exch}</div>
+            <div className="flex items-end gap-1.5" style={{ height: barMaxH * 2 + 16 }}>
+              {rates.map((r, i) => {
+                const h = Math.max(2, Math.abs(r.rate) / maxAbs * barMaxH);
+                const isNeg = r.rate < 0;
+                const color = isNeg ? exchColors[exch]?.neg || '#ef4444' : exchColors[exch]?.pos || '#22c55e';
+                const pct = (r.rate * 100).toFixed(4);
+                return (
+                  <div key={i} className="flex flex-col items-center" style={{ width: 48 }}>
+                    {/* Positive area */}
+                    <div className="flex items-end justify-center" style={{ height: barMaxH }}>
+                      {!isNeg && (
+                        <div
+                          className="rounded-t-sm transition-all duration-300"
+                          style={{ width: 20, height: h, backgroundColor: color }}
+                          title={`${fmtTime(r.time)}: ${pct}%`}
+                        />
+                      )}
+                    </div>
+                    {/* Zero line */}
+                    <div className="w-full border-t border-brand-border/40" style={{ height: 0 }} />
+                    {/* Negative area */}
+                    <div className="flex items-start justify-center" style={{ height: barMaxH }}>
+                      {isNeg && (
+                        <div
+                          className="rounded-b-sm transition-all duration-300"
+                          style={{ width: 20, height: h, backgroundColor: color }}
+                          title={`${fmtTime(r.time)}: ${pct}%`}
+                        />
+                      )}
+                    </div>
+                    {/* Label */}
+                    <div className="text-center mt-0.5">
+                      <div className={`text-[10px] font-mono font-semibold ${isNeg ? 'text-brand-danger' : 'text-brand-success'}`}>{pct}%</div>
+                      <div className="text-[8px] text-brand-text-muted">{fmtTime(r.time).split(' ')[1]}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const ExchangeBadge = ({ name }: { name: string }) => (
   <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium border ${exchangeColors[name] || 'bg-brand-surface text-brand-text-muted border-brand-border'}`}>
@@ -212,9 +329,10 @@ export default function EarnTable({ data }: EarnTableProps) {
                         onClick={() => setExpandedAsset(isExpanded ? null : item.asset)}
                       >
                         <div className="flex items-center justify-end gap-1.5 hover:bg-brand-surfaceHighlight rounded px-1 py-0.5 transition-colors">
-                          <span className="text-brand-success font-semibold">{formatPct(Math.max(item.bestEarn7d, item.stakingApr ?? 0))}</span>
+                          <span className="text-brand-success font-semibold">{formatPct(Math.max(item.bestEarn7d, item.stakingApr ?? 0, item.arbitrage?.apr ?? 0))}</span>
                           {hasRealEarn && <span className="text-[8px] text-brand-accent opacity-70">REAL</span>}
                           {(item.stakingApr ?? 0) > item.bestEarn7d && <span className="text-[8px] text-purple-400 opacity-70">SRR</span>}
+                          {item.arbitrage && item.arbitrage.apr > 0 && <span className="text-[8px] text-cyan-400 opacity-70">ARB</span>}
                           <span className="text-[10px] opacity-50 text-brand-text-muted">{isExpanded ? '\u25B2' : '\u25BC'}</span>
                         </div>
                       </td>
@@ -313,6 +431,29 @@ export default function EarnTable({ data }: EarnTableProps) {
                               </div>
                             )}
 
+                            {/* Arbitrage 套利 */}
+                            {item.arbitrage && item.arbitrage.apr > 0 && (
+                              <div className="flex-1 max-w-sm">
+                                <div className="text-xs uppercase tracking-wider text-brand-text-secondary mb-2">Arbitrage</div>
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between gap-3 text-sm">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-medium border bg-cyan-500/10 text-cyan-400 border-cyan-500/20">{item.arbitrage.swapToken}</span>
+                                      <span className="text-[9px] text-brand-text-muted opacity-70">{item.arbitrage.redeemDays}d unstake</span>
+                                    </div>
+                                    <span className="text-brand-success font-semibold font-mono">{(item.arbitrage.apr * 100).toFixed(2)}%</span>
+                                  </div>
+                                  <div className="text-[10px] text-brand-text-muted font-mono space-y-0.5">
+                                    <div className="flex justify-between"><span>Invest</span><span>{item.arbitrage.investAmount.toLocaleString()} {item.asset}</span></div>
+                                    <div className="flex justify-between"><span>Swap</span><span>{item.arbitrage.swapAmount.toLocaleString()} {item.arbitrage.swapToken}</span></div>
+                                    <div className="flex justify-between"><span>Redeem</span><span>{item.arbitrage.redeemAmount.toLocaleString()} {item.asset}</span></div>
+                                    <div className="flex justify-between"><span>Profit</span><span className="text-brand-success">+{item.arbitrage.profit.toLocaleString()} {item.asset}</span></div>
+                                    {item.arbitrage.officialRate && <div className="flex justify-between"><span>Official Rate</span><span>{item.arbitrage.officialRate}</span></div>}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
                             {/* Funding 明细 */}
                             {item.funding.length > 0 && (
                               <div className="flex-1">
@@ -343,6 +484,9 @@ export default function EarnTable({ data }: EarnTableProps) {
                                 </div>
                               </div>
                             )}
+
+                            {/* Recent Funding Bars */}
+                            <RecentFundingBars asset={item.asset} />
                           </div>
                         </td>
                       </tr>
