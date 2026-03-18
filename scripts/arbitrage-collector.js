@@ -234,6 +234,6 @@ collect().then(() => {
 // Then every 8 hours
 setInterval(() => {
   collect().catch((e) => console.error("[arb] Collection error:", e.message));
-}, 8 * 60 * 60 * 1000);
+}, 1 * 60 * 60 * 1000);
 
-console.log("[arb] Arbitrage collector started, interval: 8 hours");
+console.log("[arb] Arbitrage collector started, interval: 1 hour");
