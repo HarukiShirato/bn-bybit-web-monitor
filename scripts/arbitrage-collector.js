@@ -190,6 +190,57 @@ async function fetchTiaArbitrage() {
   }
 }
 
+
+// ── APT: amAPT via Thala (Aptos) ──
+async function fetchAptArbitrage() {
+  try {
+    const investAmount = 5000;
+    const redeemDays = 14;
+    const unstakeRate = 1.0; // 1 amAPT = 1 APT on unstake
+
+    const resp = await axios.get(
+      "https://app.thala.fi/api/panora", {
+        params: {
+          fromTokenAddress: "0x1::aptos_coin::AptosCoin",
+          toTokenAddress: "0x111ae3e5bc816a5e63c2da97d0aa3886519e0cd5e4b046659fa35796bd11542a::amapt_token::AmnisApt",
+          toWalletAddress: "",
+          slippagePercentage: "0.5",
+          fromTokenAmount: String(investAmount),
+        },
+        headers: { "User-Agent": "Mozilla/5.0" },
+        timeout: 15000,
+      }
+    );
+
+    const quotes = resp.data?.data?.quotes;
+    if (!quotes || quotes.length === 0) { console.error("[arb] APT: no Thala quotes"); return null; }
+    const amaptReceived = parseFloat(quotes[0].toTokenAmount);
+    if (!amaptReceived || amaptReceived <= 0) return null;
+
+    const exchangeRate = investAmount / amaptReceived; // APT per amAPT (< 1 means discount)
+    const redeemAmount = amaptReceived * unstakeRate;
+    const profit = redeemAmount - investAmount;
+    const apr = (profit / investAmount) * (365 / redeemDays);
+
+    console.log(`[arb] APT: swap=${amaptReceived.toFixed(2)} AMAPT, redeem=${redeemAmount.toFixed(2)}, profit=${profit.toFixed(2)}, APR=${(apr * 100).toFixed(2)}%, rate=${exchangeRate.toFixed(4)}`);
+
+    return {
+      asset: "APT",
+      investAmount,
+      swapToken: "AMAPT",
+      swapAmount: Math.round(amaptReceived * 100) / 100,
+      redeemAmount: Math.round(redeemAmount * 100) / 100,
+      profit: Math.round(profit * 100) / 100,
+      apr,
+      redeemDays,
+      officialRate: Math.round(exchangeRate * 10000) / 10000,
+      updatedAt: Date.now(),
+    };
+  } catch (e) {
+    console.error("[arb] APT fetch failed:", e.message);
+  }
+  return null;
+}
 async function collect() {
   console.log(`[arb] Starting collection at ${new Date().toISOString()}`);
 
@@ -206,6 +257,7 @@ async function collect() {
     fetchEnaArbitrage(),
     fetchAtomArbitrage(),
     fetchTiaArbitrage(),
+    fetchAptArbitrage(),
   ]);
 
   for (const r of results) {
