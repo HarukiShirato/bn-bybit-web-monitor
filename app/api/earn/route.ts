@@ -5,7 +5,7 @@ import { getOkxEarnProducts } from '@/lib/exchanges/okxEarn';
 // Market cap now from file (Binance products, collected every 8h)
 import { batchGetFundingStats, getOpenInterestMap, ExchangeOI } from '@/lib/fundingAggregator';
 import { getOkxRealEarnRates } from '@/lib/okxRealEarn';
-import { getStakingRewardsMap, getStakingInfoMap, getMarketCapsFromFile } from "@/lib/stakingRewards";
+import { getStakingRewardsMap, getStakingInfoMap, getMarketCapsFromFile, getBinanceQuotaFromFile } from "@/lib/stakingRewards";
 import { getArbitrageMap, ArbitrageInfo } from "@/lib/arbitrageData";
 
 // 跳过构建时预渲染，由进程级缓存 + funding 缓存 控制刷新
@@ -17,6 +17,7 @@ export interface EarnRate {
   apr: number;
   apr3d?: number;  // 真实 3d 平均（如有）
   apr7d?: number;  // 真实 7d 平均（如有）
+  quota?: number | null;  // 个人申购限额
 }
 
 export interface FundingRate {
@@ -96,7 +97,9 @@ export async function GET() {
       if (!assetMap.has(key)) assetMap.set(key, new Map());
       const exchMap = assetMap.get(key)!;
       const existing = exchMap.get(exchange) ?? 0;
-      if (apr > existing) exchMap.set(exchange, apr);
+      if (apr > existing) {
+        exchMap.set(exchange, apr);
+      }
     };
 
     for (const p of binanceProducts) addEarn(p.asset, 'Binance', p.apr);
@@ -115,7 +118,7 @@ export async function GET() {
     const symbols = allAssets.map(a => a + 'USDT');
 
     // 并行获取：资金费率 + OI + 市值数据 + OKX 真实收益率
-    const [fundingMap, oiMap, marketDataMap, okxRealMap, stakingMap, stakingInfoMap, arbitrageMap] = await Promise.all([
+    const [fundingMap, oiMap, marketDataMap, okxRealMap, stakingMap, stakingInfoMap, arbitrageMap, binanceQuotaMap] = await Promise.all([
       withTimeout(batchGetFundingStats(allAssets), 55000, new Map()),
       withTimeout(getOpenInterestMap(allAssets), 55000, new Map()),
       withTimeout(getMarketCapsFromFile(), 10000, new Map()),
@@ -123,6 +126,7 @@ export async function GET() {
       withTimeout(getStakingRewardsMap(), 10000, new Map()),
       withTimeout(getStakingInfoMap(), 10000, new Map()),
       withTimeout(getArbitrageMap(), 25000, new Map()),
+      withTimeout(getBinanceQuotaFromFile(), 5000, new Map()),
     ]);
 
     const rows: CombinedEarnRow[] = [];
@@ -134,6 +138,7 @@ export async function GET() {
       const earnRates: EarnRate[] = Array.from(exchMap.entries())
         .map(([exchange, apr]) => {
           const rate: EarnRate = { exchange, apr };
+          if (exchange === "Binance") rate.quota = binanceQuotaMap.get(asset) ?? null;
           if (exchange === 'OKX' && okxReal) {
             rate.apr3d = okxReal.apr3d;
             rate.apr7d = okxReal.apr7d;

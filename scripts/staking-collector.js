@@ -4,6 +4,11 @@
  * Writes to data/staking-rewards.json
  */
 const axios = require("axios");
+// Load .env file
+const envFile = require("path").join(__dirname, "..", ".env");
+try { require("fs").readFileSync(envFile, "utf-8").split("\n").forEach(line => {
+  const [k, ...v] = line.split("="); if (k && !k.startsWith("#")) process.env[k.trim()] = v.join("=").trim();
+}); } catch {}
 const fs = require("fs");
 const path = require("path");
 
@@ -462,6 +467,48 @@ async function fetchBinanceOI() {
   return result;
 }
 
+
+async function fetchBinanceQuota() {
+  const result = {};
+  if (!process.env.BINANCE_API_KEY || !process.env.BINANCE_API_SECRET) return result;
+  const KEY = process.env.BINANCE_API_KEY;
+  const SECRET = process.env.BINANCE_API_SECRET;
+  const sign = (qs) => require("crypto").createHmac("sha256", SECRET).update(qs).digest("hex");
+  try {
+    const products = [];
+    let page = 1;
+    while (true) {
+      const ts = Date.now();
+      const qs = "current=" + page + "&size=100&timestamp=" + ts;
+      const res = await axios.get("https://api.binance.com/sapi/v1/simple-earn/flexible/list?" + qs + "&signature=" + sign(qs),
+        { headers: { "X-MBX-APIKEY": KEY }, timeout: 15000 });
+      const rows = res.data.rows || [];
+      if (rows.length === 0) break;
+      for (const r of rows) { if (r.productId && r.asset && r.canPurchase) products.push({ id: r.productId, asset: r.asset }); }
+      if (page * 100 >= (res.data.total || 0)) break;
+      page++;
+      await sleep(300);
+    }
+    console.log("[staking] Binance products: " + products.length);
+    let ok = 0;
+    for (let i = 0; i < products.length; i += 5) {
+      const batch = products.slice(i, i + 5);
+      await Promise.all(batch.map(async (p) => {
+        try {
+          const ts = Date.now();
+          const qs = "productId=" + p.id + "&timestamp=" + ts;
+          const res = await axios.get("https://api.binance.com/sapi/v1/simple-earn/flexible/personalLeftQuota?" + qs + "&signature=" + sign(qs),
+            { headers: { "X-MBX-APIKEY": KEY }, timeout: 5000 });
+          const quota = parseFloat(res.data.leftPersonalQuota || "0");
+          if (quota > 0) { result[p.asset] = quota; ok++; }
+        } catch {}
+      }));
+      if (i + 5 < products.length) await sleep(300);
+    }
+    console.log("[staking] Binance quota: " + ok + "/" + products.length + " with quota");
+  } catch (e) { console.error("[staking] Binance quota fetch failed: " + e.message); }
+  return result;
+}
 async function collect() {
   console.log(`[staking] Starting collection at ${new Date().toISOString()}`);
   
@@ -511,6 +558,9 @@ async function collect() {
     existing.binanceOI = binanceOI;
   }
 
+
+  const binanceQuota = await fetchBinanceQuota();
+  if (Object.keys(binanceQuota).length > 0) existing.binanceQuota = binanceQuota;
   existing.collectedAt = Date.now();
   
   // Ensure data dir exists

@@ -99,3 +99,25 @@ export async function getMarketCapsFromFile(): Promise<Map<string, FileMcap>> {
   }
   return map;
 }
+
+
+let quotaCache: { data: Map<string, number>; ts: number } | null = null;
+
+export async function getBinanceQuotaFromFile(): Promise<Map<string, number>> {
+  if (quotaCache && Date.now() - quotaCache.ts < FILE_CACHE_TTL) return quotaCache.data;
+
+  const map = new Map<string, number>();
+  try {
+    const raw = fs.existsSync(DATA_FILE) ? JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")) : null;
+    if (raw && raw.binanceQuota) {
+      for (const [asset, quota] of Object.entries(raw.binanceQuota)) {
+        const q = quota as number;
+        if (q > 0) map.set(asset, q);
+      }
+    }
+  } catch (e) {
+    console.error("[stakingRewards] Failed to read binance quota:", e);
+  }
+  quotaCache = { data: map, ts: Date.now() };
+  return map;
+}
