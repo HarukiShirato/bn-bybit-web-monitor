@@ -668,7 +668,6 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                 </Th>
               )}
               <Th id="exchange">Exchange</Th>
-              <Th id="fundingIntervalHours" align="center">Inter</Th>
               <Th id="openInterestValue" align="right">OI</Th>
               <Th id="marketCap" align="right">M-Cap</Th>
               <Th id="apr" align="right">APR</Th>
@@ -682,7 +681,7 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
           <tbody className="divide-y divide-brand-border bg-brand-dark/50">
             {sortedData.length === 0 ? (
               <tr>
-                <td colSpan={12} className="px-6 py-24 text-center">
+                <td colSpan={11} className="px-6 py-24 text-center">
                    <div className="flex flex-col items-center justify-center text-brand-text-muted">
                       <svg className="w-12 h-12 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -737,15 +736,6 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                           {item.exchange}
                         </span>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-center">
-                        {isHl ? (
-                          <span className="text-[10px] text-brand-text-muted">—</span>
-                        ) : (
-                          <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-brand-surfaceHighlight/40 text-brand-text-secondary border border-brand-border/60">
-                            {(item.fundingIntervalHours || 8)}H
-                          </span>
-                        )}
-                      </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-primary text-right font-mono tracking-tight">
                         {formatNumber(item.openInterestValue, '', '', 1)}
                       </td>
@@ -794,7 +784,7 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                     {/* 展开：时点资金费网格 */}
                     {isExpanded && (
                       <tr className="border-b border-brand-border">
-                        <td colSpan={12} className="px-6 py-4">
+                        <td colSpan={11} className="px-6 py-4">
                           {loadingHistory ? (
                             <div className="font-mono text-[11px] text-brand-text-muted">loading funding history…</div>
                           ) : historyData.length > 0 ? (
