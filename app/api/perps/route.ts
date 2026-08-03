@@ -6,6 +6,7 @@ import { getHyperliquidPerps } from '@/lib/exchanges/hyperliquid';
 import { getAsterPerps } from '@/lib/exchanges/aster';
 import { getBatchMarketDataForSymbols } from '@/lib/marketData';
 import { fillMissingIcons } from '@/lib/coinIcons';
+import { get7dAprMap } from '@/lib/funding7d';
 
 // ISR: 每 120 秒后台自动重新验证
 export const revalidate = 120;
@@ -54,6 +55,7 @@ export interface PerpData {
   coinImage?: string; // 币种图标
   hasFundingData?: boolean; // 是否拿到 funding/premium 数据
   hasOpenInterestData?: boolean; // 是否拿到 OI 数据
+  apr7d?: number | null; // 近 7 日资金费年化（%），来自采集器历史
 }
 
 /**
@@ -248,6 +250,12 @@ export async function GET() {
       }
       console.log(`[perps] icon fallback: ${needIcon.length} missing, ${fallbackIcons.size} resolved`);
     }
+
+    // 7 日资金费年化（读采集器历史，按文件 mtime 缓存）
+    const aprMap = get7dAprMap();
+    perpsMap.forEach(perp => {
+      perp.apr7d = aprMap.get(`${perp.exchange}:${perp.symbol}`) ?? null;
+    });
 
     // 转换为数组
     const result = Array.from(perpsMap.values());

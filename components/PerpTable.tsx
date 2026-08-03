@@ -21,6 +21,7 @@ export interface PerpData {
   coinImage?: string;
   hasFundingData?: boolean;
   hasOpenInterestData?: boolean;
+  apr7d?: number | null;
 }
 
 type SortKey = keyof PerpData | 'apr' | 'none';
@@ -674,6 +675,7 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
               <Th id="fundingRate" align="right">Funding</Th>
               <Th id="nextFundingTime" align="right">Next Time</Th>
               <Th id="volume24h" align="right">24H Vol</Th>
+              <Th id="apr7d" align="right">7D APR</Th>
               <Th id="insuranceFund" align="right">Ins. Fund</Th>
               <Th id="fundOiRatio" align="right" className="pr-6">Fund/OI</Th>
             </tr>
@@ -681,7 +683,7 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
           <tbody className="divide-y divide-brand-border bg-brand-dark/50">
             {sortedData.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-6 py-24 text-center">
+                <td colSpan={12} className="px-6 py-24 text-center">
                    <div className="flex flex-col items-center justify-center text-brand-text-muted">
                       <svg className="w-12 h-12 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -697,7 +699,8 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                 const isPartial = item.hasFundingData === false || item.hasOpenInterestData === false;
                 // HL 的 RWA 合约在 xyz builder dex 上，展示时去掉 dex 前缀（数据层仍用完整 symbol 做 key / 查历史）
                 const displaySymbol = item.symbol.replace(/^xyz:/i, '');
-                const isHl = item.exchange === 'Hyperliquid';
+                // builder dex 的 RWA（xyz:SP500）资产表里没有图标，其余照常显示
+                const isRwa = item.symbol.includes(':');
 
                 return (
                   <>
@@ -710,7 +713,7 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                         className="flex items-center"
                         title={item.coinName || displaySymbol.replace('USDT', '')}
                       >
-                        <CoinIcon src={item.coinImage} label={displaySymbol} blank={isHl} />
+                        <CoinIcon src={item.coinImage} label={displaySymbol} blank={isRwa} />
                       </div>
                     </td>
                       <td
@@ -763,6 +766,15 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-primary text-right font-mono tracking-tight">
                         {formatNumber(item.volume24h, '', '', 1)}
                       </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-right font-mono tracking-tight">
+                        {item.apr7d === null || item.apr7d === undefined ? (
+                          <span className="text-brand-text-muted">-</span>
+                        ) : (
+                          <span className={item.apr7d >= 0 ? 'text-brand-success' : 'text-brand-danger'}>
+                            {(item.apr7d >= 0 ? '+' : '') + item.apr7d.toFixed(2)}%
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-secondary text-right font-mono tracking-tight">
                         {formatNumber(item.insuranceFund, '', '', 1)}
                       </td>
@@ -784,7 +796,7 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                     {/* 展开：时点资金费网格 */}
                     {isExpanded && (
                       <tr className="border-b border-brand-border">
-                        <td colSpan={11} className="px-6 py-4">
+                        <td colSpan={12} className="px-6 py-4">
                           {loadingHistory ? (
                             <div className="font-mono text-[11px] text-brand-text-muted">loading funding history…</div>
                           ) : historyData.length > 0 ? (
