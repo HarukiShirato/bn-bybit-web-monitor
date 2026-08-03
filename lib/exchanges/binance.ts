@@ -32,8 +32,9 @@ async function getBinanceSymbols(): Promise<{symbol: string, fundingIntervalHour
   try {
     const response = await axios.get(`${BINANCE_API_BASE}/fapi/v1/exchangeInfo`);
     return response.data.symbols
-      .filter((s: any) => 
-        s.contractType === 'PERPETUAL' && 
+      .filter((s: any) =>
+        // TRADIFI_PERPETUAL 是股票/商品类永续（NVDA、TSLA、XAU…），同样是永续合约
+        (s.contractType === 'PERPETUAL' || s.contractType === 'TRADIFI_PERPETUAL') &&
         s.status === 'TRADING' &&
         s.symbol.endsWith('USDT') // 只保留USDT交易对
       )
