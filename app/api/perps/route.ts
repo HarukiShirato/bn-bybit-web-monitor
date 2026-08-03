@@ -240,9 +240,14 @@ export async function GET() {
     // SPY -> Smarty Pay），图标、名称、市值全是错的，这里统一纠正。
     const iconMap = await getCoinIconMap().catch(() => new Map<string, string>());
 
-    // Binance 用 contractType 权威地标了 150+ 个股票 ticker，拿它当其它所的判据。
-    // 但同名不同物是存在的（Binance 的 WEN 是 Wendy's，别处的 WEN 是 meme 币），
-    // 所以只有在 CoinGecko 认不出这个币（没有市值）时才跟着标记。
+    // Binance 用 contractType 权威地标了 150+ 个股票 ticker，拿它当其它所的判据，
+    // 这样同一个 ticker 在各所的呈现是一致的（不会 Binance 显示 SanDisk、
+    // Bybit 显示某个同名代币）。
+    // 例外是确实同名不同物的：Binance 的 WEN 是 Wendy's，别处的 WEN 是 meme 币，
+    // 这些只认各所自己的 contractType，不跨所推断。
+    // 在币圈有知名同名代币，不跟随跨所推断
+    const AMBIGUOUS_TICKERS = new Set(['WEN', 'SPX', 'CAT', 'BOT', 'APP', 'NOW', 'PENG', 'SNOW', 'DIS', 'V', 'ARM', 'IP']);
+
     const binanceTradFiBases = new Set<string>();
     perpsMap.forEach(perp => {
       if (perp.exchange === 'Binance' && perp.isTradFi) {
@@ -254,7 +259,7 @@ export async function GET() {
     perpsMap.forEach(perp => {
       const base = baseOfSymbol(perp.symbol);
       if (!base) return;
-      const inferred = binanceTradFiBases.has(base) && perp.marketCap == null;
+      const inferred = binanceTradFiBases.has(base) && !AMBIGUOUS_TICKERS.has(base);
       if (!perp.isTradFi && !STOCK_TICKERS.has(base) && !inferred) return;
 
       perp.isTradFi = true;

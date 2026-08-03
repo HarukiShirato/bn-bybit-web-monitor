@@ -699,8 +699,7 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                 const isPartial = item.hasFundingData === false || item.hasOpenInterestData === false;
                 // HL 的 RWA 合约在 xyz builder dex 上，展示时去掉 dex 前缀（数据层仍用完整 symbol 做 key / 查历史）
                 const displaySymbol = item.symbol.replace(/^xyz:/i, '');
-                // builder dex 的 RWA（xyz:SP500）资产表里没有图标，其余照常显示
-                const isRwa = item.symbol.includes(':');
+
 
                 return (
                   <>
@@ -713,7 +712,7 @@ export default function PerpTable({ data, search = '', onSearchChange, totalCoun
                         className="flex items-center"
                         title={item.coinName || displaySymbol.replace('USDT', '')}
                       >
-                        <CoinIcon src={item.coinImage} label={displaySymbol} blank={isRwa} />
+                        <CoinIcon src={item.coinImage} label={displaySymbol} />
                       </div>
                     </td>
                       <td

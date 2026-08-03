@@ -15,13 +15,13 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 
 let memo: { map: Map<string, string>; ts: number } | null = null;
 
-/** 合约符号 -> 币种 base，取不到图标的（指数、builder dex 股票）返回 null */
+/** 合约符号 -> 币种 base。HL builder dex 的 dex 前缀在这里剥掉（xyz:NVDA -> NVDA） */
 export function baseOfSymbol(symbol: string): string | null {
   if (!symbol) return null;
-  // HL builder dex（xyz:NVDA）是股票/指数，交易所资产表里没有
-  if (symbol.includes(':')) return null;
 
   let s = symbol.toUpperCase();
+  const colon = s.indexOf(':');
+  if (colon >= 0) s = s.slice(colon + 1);
   s = s.replace(/(USDT|USDC|BUSD|FDUSD|USD)$/, '');
   // 1000SHIB / 1000000MOG 这类倍数合约，只剥 10 的整次幂，别把 1INCH 剥成 INCH
   const m = s.match(/^(1000|10000|100000|1000000)([A-Z0-9]+)$/);
@@ -98,11 +98,14 @@ export const STOCK_TICKERS = new Set([
   'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META', 'GOOGL', 'AMZN', 'COIN', 'MSTR',
   'HOOD', 'CRCL', 'SPCX', 'QQQ', 'SPY', 'BABA', 'PLTR', 'AMD', 'NFLX',
   'XAU', 'XAG', 'XAUT',
+  // HL builder dex(xyz) 上的指数与商品
+  'SP500', 'XYZ100', 'GOLD', 'SILVER', 'BRENTOIL', 'DRAM', 'CXMT', 'SKHX', 'SKHY',
 ]);
 
 // Binance 把股票代币化产品叫 bStocks，资产代码是 ticker + B，带官方 logo
 const STOCK_ICON_ALIAS: Record<string, string> = {
-  XAU: 'XAUT',  // 没有 XAUB，用 Tether Gold 的图代黄金
+  XAU: 'XAUT',   // 没有 XAUB，用 Tether Gold 的图代黄金
+  GOLD: 'XAUT',  // xyz:GOLD 同理
   XAUT: 'XAUT',
 };
 
