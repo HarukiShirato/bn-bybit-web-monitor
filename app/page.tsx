@@ -206,9 +206,14 @@ export default function Home() {
 
   // ========== 永续过滤 ==========
   const filteredData = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     return data.filter(item => {
-      if (!selectedExchanges.has(item.exchange)) return false;
-      if (searchQuery && !item.symbol.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (q) {
+        // 搜索时无视交易所勾选，symbol 和交易所名都能命中
+        if (!item.symbol.toLowerCase().includes(q) && !item.exchange.toLowerCase().includes(q)) return false;
+      } else if (!selectedExchanges.has(item.exchange)) {
+        return false;
+      }
       if (item.openInterestValue < minOi) return false;
       if (item.fundOiRatio < minFundOiRatio) return false;
       const interval = item.fundingIntervalHours || 8;
@@ -416,8 +421,6 @@ export default function Home() {
                     selectedExchanges={selectedExchanges}
                     onToggle={toggleExchange}
                   />
-                  <div className="hidden sm:block w-px h-8 bg-brand-border" />
-                  <SearchBox value={searchQuery} onChange={setSearchQuery} />
                 </div>
               </div>
 
@@ -459,7 +462,21 @@ export default function Home() {
                  Loading market data...
               </div>
             ) : (
-              <PerpTable data={filteredData} />
+              <>
+                <div className="mb-2 flex flex-wrap items-center gap-3 pl-6">
+                  <SearchBox
+                    value={searchQuery}
+                    onChange={setSearchQuery}
+                    hotkey={activeTab === 'perps'}
+                  />
+                  {searchQuery && (
+                    <span className="text-[11px] text-brand-text-muted">
+                      {filteredData.length} hits · all exchanges
+                    </span>
+                  )}
+                </div>
+                <PerpTable data={filteredData} />
+              </>
             )}
           </>
         )}
@@ -480,7 +497,8 @@ export default function Home() {
                   <SearchBox
                     value={earnSearchQuery}
                     onChange={setEarnSearchQuery}
-                    placeholder="Search asset..."
+                    placeholder="search asset…"
+                    hotkey={activeTab === 'earn'}
                   />
                 </div>
               </div>
