@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     const symbol = asset.toUpperCase() + 'USDT';
     const result: Record<string, { time: number; rate: number }[]> = {};
 
-    for (const exch of ['binance', 'bybit', 'hyperliquid']) {
+    for (const exch of ['binance', 'bybit', 'hyperliquid', 'aster']) {
       const entry = raw[exch]?.[symbol];
       if (!entry) continue;
 

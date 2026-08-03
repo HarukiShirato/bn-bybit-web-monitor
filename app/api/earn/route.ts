@@ -49,10 +49,12 @@ export interface CombinedEarnRow {
   bybitOI: number | null;
   hyperliquidOI: number | null;
   okxOI: number | null;
+  asterOI: number | null;
   binanceVol: number | null;
   bybitVol: number | null;
   hyperliquidVol: number | null;
   okxVol: number | null;
+  asterVol: number | null;
   bestVolume: number | null;
   marketCap: number | null;
   stakingApr: number | null;
@@ -181,6 +183,9 @@ export async function GET() {
         if (fs.okx3d != null || fs.okx7d != null) {
           funding.push({ exchange: 'OKX', apr3d: fs.okx3d ?? 0, apr7d: fs.okx7d ?? 0, apr30d: fs.okx30d ?? 0 });
         }
+        if (fs.aster3d != null || fs.aster7d != null) {
+          funding.push({ exchange: 'Aster', apr3d: fs.aster3d ?? 0, apr7d: fs.aster7d ?? 0, apr30d: fs.aster30d ?? 0 });
+        }
       }
 
       let bestFunding3d = 0, bestFunding7d = 0, bestFunding30d = 0;
@@ -243,15 +248,18 @@ export async function GET() {
         bybitOI: oiMap.get(asset)?.bybit ?? null,
         hyperliquidOI: oiMap.get(asset)?.hyperliquid ?? null,
         okxOI: oiMap.get(asset)?.okx ?? null,
+        asterOI: oiMap.get(asset)?.aster ?? null,
         binanceVol: volMap.get(asset)?.binance ?? null,
         bybitVol: volMap.get(asset)?.bybit ?? null,
         hyperliquidVol: volMap.get(asset)?.hyperliquid ?? null,
         okxVol: volMap.get(asset)?.okx ?? null,
+        asterVol: volMap.get(asset)?.aster ?? null,
         bestVolume: Math.max(
           volMap.get(asset)?.binance ?? 0,
           volMap.get(asset)?.bybit ?? 0,
           volMap.get(asset)?.hyperliquid ?? 0,
-          volMap.get(asset)?.okx ?? 0
+          volMap.get(asset)?.okx ?? 0,
+          volMap.get(asset)?.aster ?? 0
         ) || null,
         stakingApr: stakingMap.get(asset) ?? null,
         stakingUnstakingDays: stakingInfoMap.get(asset)?.unstakingDays ?? null,

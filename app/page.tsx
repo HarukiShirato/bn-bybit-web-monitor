@@ -10,7 +10,7 @@ import EarnTable, { CombinedEarnRow } from '@/components/EarnTable';
 import EarnFilterControls from '@/components/EarnFilterControls';
 import OptionsTable, { OptionRow } from '@/components/OptionsTable';
 
-const PERP_EXCHANGES = ['Binance', 'Bybit', 'Bitget', 'Gate', 'OKX', 'Hyperliquid'];
+const PERP_EXCHANGES = ['Binance', 'Bybit', 'Bitget', 'Gate', 'OKX', 'Hyperliquid', 'Aster'];
 const EARN_EXCHANGES = ['Binance', 'Bybit', 'OKX'];
 
 export default function Home() {

@@ -23,10 +23,14 @@ export interface FundingStats {
   okx3d: number | null;
   okx7d: number | null;
   okx30d: number | null;
+  aster3d: number | null;
+  aster7d: number | null;
+  aster30d: number | null;
 }
 
 const BINANCE_FAPI = 'https://www.binance.com';  // www proxy avoids 403
 const BYBIT_API = 'https://api.bybit.com';
+const ASTER_API = 'https://fapi.asterdex.com';
 const DATA_FILE = path.join(process.cwd(), 'data', 'funding-history.json');
 
 /* ── Types ── */
@@ -37,6 +41,8 @@ interface FundingHistoryData {
   bybit: Record<string, { intervalHours: number; rates: SettledRate[] }>;
   hyperliquid: Record<string, SettledRate[]>;
   okx: Record<string, SettledRate[]>;
+  aster: Record<string, SettledRate[]>;
+  asterOI: Record<string, { qty: number; value: number; time: number }>;
   updatedAt: number;
 }
 
@@ -47,14 +53,17 @@ interface RateSnapshot {
   bybit: Map<string, number>;
   hyperliquid: Map<string, number>;
   okx: Map<string, number>;
+  aster: Map<string, number>;
   binanceOI: Map<string, number>;
   bybitOI: Map<string, number>;
   hyperliquidOI: Map<string, number>;
   okxOI: Map<string, number>;
+  asterOI: Map<string, number>;
   binanceVol: Map<string, number>;
   bybitVol: Map<string, number>;
   hyperliquidVol: Map<string, number>;
   okxVol: Map<string, number>;
+  asterVol: Map<string, number>;
   timestamp: number;
 }
 
@@ -262,30 +271,78 @@ async function fetchOkxData(): Promise<{ rates: Map<string, number>; oi: Map<str
   return { rates, oi, vol };
 }
 
+/* ── Bulk snapshot: Aster ──
+ * 只打 2 个批量请求：premiumIndex（费率）+ ticker/24hr（成交额）。
+ * Aster 没有批量 OI 端点，OI 由 funding-collector 每小时慢速采集后写文件，
+ * 这里直接读，避免逐 symbol 请求触发 CloudFront WAF 的频率封禁。
+ */
+async function fetchAsterData(): Promise<{ rates: Map<string, number>; oi: Map<string, number>; vol: Map<string, number> }> {
+  const rates = new Map<string, number>();
+  const oi = new Map<string, number>();
+  const vol = new Map<string, number>();
+  try {
+    const res = await axios.get(`${ASTER_API}/fapi/v1/premiumIndex`, { timeout: 15000 });
+    if (Array.isArray(res.data)) {
+      for (const item of res.data) {
+        if (!item.symbol?.endsWith('USDT')) continue;
+        rates.set(item.symbol, parseFloat(item.lastFundingRate || '0'));
+      }
+    }
+  } catch (e: any) {
+    console.error(`[funding] Aster premiumIndex failed: ${e.message}`);
+  }
+  try {
+    const tickerRes = await axios.get(`${ASTER_API}/fapi/v1/ticker/24hr`, { timeout: 15000 });
+    if (Array.isArray(tickerRes.data)) {
+      for (const item of tickerRes.data) {
+        if (!item.symbol?.endsWith('USDT')) continue;
+        const v = parseFloat(item.quoteVolume || '0');
+        if (v > 0) vol.set(item.symbol, v);
+      }
+    }
+  } catch (e: any) {
+    console.error(`[funding] Aster ticker24hr failed: ${e.message}`);
+  }
+  // OI 走采集器落盘的快照
+  try {
+    const histData = getFundingHistory();
+    for (const [symbol, entry] of Object.entries(histData?.asterOI || {})) {
+      const v = (entry as any)?.value;
+      if (typeof v === 'number' && v > 0) oi.set(symbol, v);
+    }
+  } catch {}
+  console.log(`[funding] Aster: ${rates.size} symbols, ${oi.size} with OI`);
+  return { rates, oi, vol };
+}
+
 async function getLatestSnapshot(): Promise<RateSnapshot> {
   const store = getStore();
   if (store.snapshot && Date.now() - store.snapshot.timestamp < SNAPSHOT_CACHE_TTL) {
     return store.snapshot;
   }
-  const [binanceData, bybitData, hlData, okxData] = await Promise.all([
+  const [binanceData, bybitData, hlData, okxData, asterData] = await Promise.all([
     fetchBinanceData(),
     fetchBybitData(),
     fetchHyperliquidData(),
     fetchOkxData(),
+    fetchAsterData(),
   ]);
   const snapshot: RateSnapshot = {
     binance: binanceData.rates,
     bybit: bybitData.rates,
     hyperliquid: hlData.rates,
     okx: okxData.rates,
+    aster: asterData.rates,
     binanceOI: binanceData.oi,
     bybitOI: bybitData.oi,
     hyperliquidOI: hlData.oi,
     okxOI: okxData.oi,
+    asterOI: asterData.oi,
     binanceVol: binanceData.vol,
     bybitVol: bybitData.vol,
     hyperliquidVol: hlData.vol,
     okxVol: okxData.vol,
+    asterVol: asterData.vol,
     timestamp: Date.now(),
   };
   store.snapshot = snapshot;
@@ -378,7 +435,17 @@ export async function batchGetFundingStats(assets: string[]): Promise<Map<string
       okx30d = calcAprFromSettled(okxHist, 30, okxInterval);
     }
 
-    result.set(upper, { binance3d, binance7d, binance30d, bybit3d, bybit7d, bybit30d, hyperliquid3d, hyperliquid7d, hyperliquid30d, okx3d, okx7d, okx30d });
+    // Aster: 从文件读取，结算间隔按币种检测（BTC 8h，部分小币 1h/4h）
+    let aster3d: number | null = null, aster7d: number | null = null, aster30d: number | null = null;
+    const asterHist = histData?.aster?.[bnSymbol];  // Aster 的 1000x 命名与 Binance 一致
+    if (asterHist && asterHist.length > 0) {
+      const asterInterval = detectIntervalHours(asterHist);
+      aster3d = calcAprFromSettled(asterHist, 3, asterInterval);
+      aster7d = calcAprFromSettled(asterHist, 7, asterInterval);
+      aster30d = calcAprFromSettled(asterHist, 30, asterInterval);
+    }
+
+    result.set(upper, { binance3d, binance7d, binance30d, bybit3d, bybit7d, bybit30d, hyperliquid3d, hyperliquid7d, hyperliquid30d, okx3d, okx7d, okx30d, aster3d, aster7d, aster30d });
   }
 
   const withData = [...result.values()].filter(s =>
@@ -388,7 +455,8 @@ export async function batchGetFundingStats(assets: string[]): Promise<Map<string
   const bySymCount = histData ? Object.keys(histData.bybit || {}).length : 0;
   const age = histData ? Math.round((Date.now() - (histData.updatedAt || 0)) / 1000) : -1;
   const hlSymCount = histData ? Object.keys(histData.hyperliquid || {}).length : 0;
-  console.log(`[funding] ${withData}/${result.size} have data (file: bn=${bnSymCount} by=${bySymCount} hl=${hlSymCount}, age=${age}s)`);
+  const astSymCount = histData ? Object.keys(histData.aster || {}).length : 0;
+  console.log(`[funding] ${withData}/${result.size} have data (file: bn=${bnSymCount} by=${bySymCount} hl=${hlSymCount} ast=${astSymCount}, age=${age}s)`);
   return result;
 }
 
@@ -397,6 +465,7 @@ export interface ExchangeVolume {
   bybit: number;
   hyperliquid: number;
   okx: number;
+  aster: number;
 }
 
 export async function getVolumeMap(assets: string[]): Promise<Map<string, ExchangeVolume>> {
@@ -410,8 +479,9 @@ export async function getVolumeMap(assets: string[]): Promise<Map<string, Exchan
     const bybitVol = snapshot.bybitVol.get(symbol) ?? 0;
     const hlVol = snapshot.hyperliquidVol.get(symbol) ?? 0;
     const okxVol = snapshot.okxVol.get(symbol) ?? 0;
-    if (binanceVol > 0 || bybitVol > 0 || hlVol > 0 || okxVol > 0) {
-      result.set(upper, { binance: binanceVol, bybit: bybitVol, hyperliquid: hlVol, okx: okxVol });
+    const asterVol = snapshot.asterVol.get(symbol) ?? 0;
+    if (binanceVol > 0 || bybitVol > 0 || hlVol > 0 || okxVol > 0 || asterVol > 0) {
+      result.set(upper, { binance: binanceVol, bybit: bybitVol, hyperliquid: hlVol, okx: okxVol, aster: asterVol });
     }
   }
   return result;
@@ -422,6 +492,7 @@ export interface ExchangeOI {
   bybit: number;
   hyperliquid: number;
   okx: number;
+  aster: number;
 }
 
 /**
@@ -449,8 +520,9 @@ export async function getOpenInterestMap(assets: string[]): Promise<Map<string, 
     const bybitOI = snapshot.bybitOI.get(symbol) ?? 0;
     const hlOI = snapshot.hyperliquidOI.get(symbol) ?? 0;
     const okxOI = snapshot.okxOI.get(symbol) ?? 0;
-    if (binanceOI > 0 || bybitOI > 0 || hlOI > 0 || okxOI > 0) {
-      result.set(upper, { binance: binanceOI, bybit: bybitOI, hyperliquid: hlOI, okx: okxOI });
+    const asterOI = snapshot.asterOI.get(symbol) ?? 0;
+    if (binanceOI > 0 || bybitOI > 0 || hlOI > 0 || okxOI > 0 || asterOI > 0) {
+      result.set(upper, { binance: binanceOI, bybit: bybitOI, hyperliquid: hlOI, okx: okxOI, aster: asterOI });
     }
   }
 

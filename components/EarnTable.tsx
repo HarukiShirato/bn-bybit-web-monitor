@@ -52,10 +52,12 @@ export interface CombinedEarnRow {
   bybitOI: number | null;
   hyperliquidOI: number | null;
   okxOI: number | null;
+  asterOI: number | null;
   binanceVol: number | null;
   bybitVol: number | null;
   hyperliquidVol: number | null;
   okxVol: number | null;
+  asterVol: number | null;
   bestVolume: number | null;
   marketCap: number | null;
   stakingApr: number | null;
@@ -74,6 +76,8 @@ const exchangeColors: Record<string, string> = {
   Binance: 'bg-[#FCD535]/10 text-[#FCD535] border-[#FCD535]/20',
   Bybit: 'bg-brand-info/10 text-brand-info border-brand-info/20',
   OKX: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  Hyperliquid: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
+  Aster: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
   Navi: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
 };
 
@@ -99,11 +103,12 @@ function RecentFundingBars({ asset }: { asset: string }) {
   if (loading) return <div className="text-xs text-brand-text-muted py-2">Loading...</div>;
   if (!data || Object.keys(data).length === 0) return <div className="text-xs text-brand-text-muted py-2">No funding data</div>;
 
-  const exchNames: Record<string, string> = { binance: 'Binance', bybit: 'Bybit', hyperliquid: 'HL' };
+  const exchNames: Record<string, string> = { binance: 'Binance', bybit: 'Bybit', hyperliquid: 'HL', aster: 'Aster' };
   const exchColors: Record<string, { pos: string; neg: string }> = {
     binance: { pos: '#22c55e', neg: '#ef4444' },
     bybit: { pos: '#3b82f6', neg: '#f97316' },
     hyperliquid: { pos: '#a78bfa', neg: '#f472b6' },
+    aster: { pos: '#fb923c', neg: '#e879f9' },
   };
 
   // Format time to Beijing time (UTC+8)
@@ -398,6 +403,7 @@ export default function EarnTable({ data }: EarnTableProps) {
                           if (item.bybitVol && item.bybitVol > 0) vols.push({ ex: 'by', vol: item.bybitVol });
                           if (item.hyperliquidVol && item.hyperliquidVol > 0) vols.push({ ex: 'hype', vol: item.hyperliquidVol });
                           if (item.okxVol && item.okxVol > 0) vols.push({ ex: 'okx', vol: item.okxVol });
+                          if (item.asterVol && item.asterVol > 0) vols.push({ ex: 'ast', vol: item.asterVol });
                           if (vols.length === 0) return <span className="text-brand-text-muted">{'\u2014'}</span>;
                           vols.sort((a, b) => b.vol - a.vol);
                           const top = vols[0];
@@ -497,6 +503,9 @@ export default function EarnTable({ data }: EarnTableProps) {
                                   )}
                                   {(item.okxOI != null && item.okxOI > 0) && (
                                     <span className="text-xs text-brand-text-muted font-mono">OKX OI: {formatNumber(item.okxOI, 1)}</span>
+                                  )}
+                                  {(item.asterOI != null && item.asterOI > 0) && (
+                                    <span className="text-xs text-brand-text-muted font-mono">Aster OI: {formatNumber(item.asterOI, 1)}</span>
                                   )}
                                 </div>
                                 <div className="space-y-2">
