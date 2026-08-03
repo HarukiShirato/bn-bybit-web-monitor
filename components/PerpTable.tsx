@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 
 export interface PerpData {
   symbol: string;
@@ -27,6 +28,134 @@ type SortOrder = 'asc' | 'desc';
 
 interface PerpTableProps {
   data: PerpData[];
+}
+
+/* ── 历史资金费折线 ──
+   手写 SVG：一条白线 + 零轴虚线，没有网格没有填充，和整体的终端风格一致。
+   鼠标移上去出竖线和该结算点的读数（正绿负红）。 */
+function FundingLine({
+  history,
+  intervalHours,
+}: {
+  history: FundingPoint[];
+  intervalHours: number;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+
+  const W = 800;
+  const H = 140;
+  const PAD = 10;
+
+  if (history.length < 2) return null;
+
+  const rates = history.map(p => p.rate * 100);
+  const max = Math.max(...rates, 0);
+  const min = Math.min(...rates, 0);
+  const span = max - min || 1;
+  const cycles = intervalHours > 0 ? 24 / intervalHours : 3;
+
+  const xAt = (i: number) => (i / (history.length - 1)) * W;
+  const yAt = (v: number) => PAD + ((max - v) / span) * (H - 2 * PAD);
+  const points = history.map((_, i) => `${xAt(i).toFixed(2)},${yAt(rates[i]).toFixed(2)}`).join(' ');
+
+  const fmtTs = (ts: number) => {
+    const d = new Date(ts);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const onMove = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const rel = (e.clientX - rect.left) / rect.width;
+    setHover(Math.min(history.length - 1, Math.max(0, Math.round(rel * (history.length - 1)))));
+  };
+
+  const hovered = hover === null ? null : history[hover];
+  const hoveredRate = hover === null ? 0 : rates[hover];
+
+  return (
+    <div className="mt-3 pt-2 border-t border-brand-border">
+      <div className="flex items-center justify-between text-brand-text-muted mb-1">
+        <span>funding history · {history.length} pts</span>
+        <span>
+          {hovered ? (
+            <>
+              <span className="text-brand-text-secondary">{fmtTs(hovered.time)} </span>
+              <span className={hoveredRate >= 0 ? 'text-brand-success' : 'text-brand-danger'}>
+                {(hoveredRate >= 0 ? '+' : '') + hoveredRate.toFixed(4)}%
+              </span>
+              <span className="text-brand-text-muted"> · apr </span>
+              <span className={hoveredRate >= 0 ? 'text-brand-success' : 'text-brand-danger'}>
+                {(hoveredRate >= 0 ? '+' : '') + (hoveredRate * cycles * 365).toFixed(2)}%
+              </span>
+            </>
+          ) : (
+            <span>hover for reading</span>
+          )}
+        </span>
+      </div>
+
+      <div
+        className="relative select-none"
+        style={{ height: H }}
+        onMouseMove={onMove}
+        onMouseLeave={() => setHover(null)}
+      >
+        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+          {/* 零轴 */}
+          <line
+            x1={0}
+            x2={W}
+            y1={yAt(0)}
+            y2={yAt(0)}
+            stroke="#27272A"
+            strokeDasharray="3 3"
+            vectorEffect="non-scaling-stroke"
+          />
+          <polyline
+            points={points}
+            fill="none"
+            stroke="#FFFFFF"
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          />
+          {hover !== null && (
+            <>
+              <line
+                x1={xAt(hover)}
+                x2={xAt(hover)}
+                y1={0}
+                y2={H}
+                stroke="#52525B"
+                vectorEffect="non-scaling-stroke"
+              />
+              <circle
+                cx={xAt(hover)}
+                cy={yAt(hoveredRate)}
+                r={2.5}
+                fill={hoveredRate >= 0 ? '#10B981' : '#F43F5E'}
+                vectorEffect="non-scaling-stroke"
+              />
+            </>
+          )}
+        </svg>
+
+        {/* 轴标签放在 HTML 层，避免被 viewBox 拉伸 */}
+        <span className="absolute top-0 right-0 text-[10px] text-brand-text-muted">
+          {max.toFixed(4)}%
+        </span>
+        <span className="absolute bottom-0 right-0 text-[10px] text-brand-text-muted">
+          {min.toFixed(4)}%
+        </span>
+      </div>
+
+      <div className="flex justify-between text-[10px] text-brand-text-muted mt-0.5">
+        <span>{fmtTs(history[0].time)}</span>
+        <span>{fmtTs(history[history.length - 1].time)}</span>
+      </div>
+    </div>
+  );
 }
 
 /* ── 时点资金费网格 ──
@@ -127,6 +256,8 @@ function FundingGrid({
         <Stat label="7d" value={aprOver(7)} />
         <Stat label="30d" value={aprOver(30)} />
       </div>
+
+      <FundingLine history={sorted} intervalHours={intervalHours} />
 
       {constituents.length > 0 && (
         <div className="mt-3 pt-2 border-t border-brand-border">
