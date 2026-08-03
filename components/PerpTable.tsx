@@ -303,6 +303,7 @@ export default function PerpTable({ data }: PerpTableProps) {
                 const isPartial = item.hasFundingData === false || item.hasOpenInterestData === false;
                 // HL 的 RWA 合约在 xyz builder dex 上，展示时去掉 dex 前缀（数据层仍用完整 symbol 做 key / 查历史）
                 const displaySymbol = item.symbol.replace(/^xyz:/i, '');
+                const isHl = item.exchange === 'Hyperliquid';
 
                 return (
                   <>
@@ -321,6 +322,9 @@ export default function PerpTable({ data }: PerpTableProps) {
                             alt={item.coinName || item.symbol}
                             className="w-6 h-6 rounded-full border border-brand-border/60"
                           />
+                        ) : isHl ? (
+                          // HL（尤其 builder dex 的 RWA）没有币种图标，留空位保持列宽
+                          <div className="w-6 h-6" />
                         ) : (
                           <div className="w-6 h-6 rounded-full bg-brand-surface border border-brand-border flex items-center justify-center text-[10px] font-bold text-brand-text-secondary group-hover:border-brand-accent/30 group-hover:text-brand-accent transition-colors">
                             {displaySymbol.substring(0, 1)}
@@ -358,9 +362,13 @@ export default function PerpTable({ data }: PerpTableProps) {
                         </span>
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-center">
-                        <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-brand-surfaceHighlight/40 text-brand-text-secondary border border-brand-border/60">
-                          {(item.fundingIntervalHours || 8)}H
-                        </span>
+                        {isHl ? (
+                          <span className="text-[10px] text-brand-text-muted">—</span>
+                        ) : (
+                          <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-brand-surfaceHighlight/40 text-brand-text-secondary border border-brand-border/60">
+                            {(item.fundingIntervalHours || 8)}H
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-primary text-right font-mono tracking-tight">
                         {formatNumber(item.openInterestValue, '', '', 1)}
