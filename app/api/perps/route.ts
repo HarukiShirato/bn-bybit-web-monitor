@@ -5,6 +5,7 @@ import { getOkxPerps } from '@/lib/exchanges/okx';
 import { getHyperliquidPerps } from '@/lib/exchanges/hyperliquid';
 import { getAsterPerps } from '@/lib/exchanges/aster';
 import { getBatchMarketDataForSymbols } from '@/lib/marketData';
+import { fillMissingIcons } from '@/lib/coinIcons';
 
 // ISR: 每 120 秒后台自动重新验证
 export const revalidate = 120;
@@ -230,6 +231,23 @@ export async function GET() {
         perp.coinImage = marketData.image;
       }
     });
+
+    // CoinGecko 限流时会缺一大片图标，用交易所自己的资产表兜底
+    const needIcon = [...new Set(
+      Array.from(perpsMap.values()).filter(p => !p.coinImage).map(p => p.symbol)
+    )];
+    if (needIcon.length > 0) {
+      const fallbackIcons = await withTimeout(fillMissingIcons(needIcon), 15000, new Map<string, string>());
+      if (fallbackIcons.size > 0) {
+        perpsMap.forEach(perp => {
+          if (!perp.coinImage) {
+            const url = fallbackIcons.get(perp.symbol);
+            if (url) perp.coinImage = url;
+          }
+        });
+      }
+      console.log(`[perps] icon fallback: ${needIcon.length} missing, ${fallbackIcons.size} resolved`);
+    }
 
     // 转换为数组
     const result = Array.from(perpsMap.values());

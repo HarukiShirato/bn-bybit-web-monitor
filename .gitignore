@@ -49,3 +49,4 @@ next-env.d.ts
 /data/arbitrage-data.json
 /data/options-cache.json
 /scripts/data/
+data/coin-icons.json

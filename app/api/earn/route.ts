@@ -7,6 +7,7 @@ import { batchGetFundingStats, getOpenInterestMap, ExchangeOI, getVolumeMap, Exc
 import { getOkxRealEarnRates } from '@/lib/okxRealEarn';
 import { getStakingRewardsMap, getStakingInfoMap, getMarketCapsFromFile, getBinanceQuotaFromFile, getNaviLendingRates } from "@/lib/stakingRewards";
 import { getArbitrageMap, ArbitrageInfo } from "@/lib/arbitrageData";
+import { getCoinIconMap } from "@/lib/coinIcons";
 
 // 跳过构建时预渲染，由进程级缓存 + funding 缓存 控制刷新
 export const dynamic = 'force-dynamic';
@@ -149,6 +150,9 @@ export async function GET() {
 
     const rows: CombinedEarnRow[] = [];
 
+    // earn 表的 asset 就是币种 base，直接查图标表（失败返回空 Map，不影响主流程）
+    const coinIcons = await getCoinIconMap().catch(() => new Map<string, string>());
+
     for (const [asset, exchMap] of assetMap.entries()) {
       // 构建 earnRates，OKX 附带真实 3d/7d
       const okxReal = okxRealMap.get(asset);
@@ -242,7 +246,7 @@ export async function GET() {
         bestFundingExchange30d,
         combined3d: Math.max(bestEarn3d, stakingMap.get(asset) ?? 0, arbitrageMap.get(asset)?.apr ?? 0) + bestFunding3d,
         combined7d: Math.max(bestEarn7d, stakingMap.get(asset) ?? 0, arbitrageMap.get(asset)?.apr ?? 0) + bestFunding7d,
-        coinImage: undefined,
+        coinImage: coinIcons.get(asset.toUpperCase()) || undefined,
         coinName: md?.name || undefined,
         binanceOI: oiMap.get(asset)?.binance ?? null,
         bybitOI: oiMap.get(asset)?.bybit ?? null,
