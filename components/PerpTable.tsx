@@ -6,7 +6,7 @@ import { Cell } from 'recharts';
 
 export interface PerpData {
   symbol: string;
-  exchange: 'Binance' | 'Bybit' | 'OKX';
+  exchange: 'Binance' | 'Bybit' | 'OKX' | 'Hyperliquid' | 'Aster';
   price: number;
   openInterest: number;
   openInterestValue: number;
@@ -301,7 +301,9 @@ export default function PerpTable({ data }: PerpTableProps) {
                 const apr = calculateApr(item.fundingRate, item.fundingIntervalHours);
                 const isExpanded = expandedRow === `${item.symbol}-${item.exchange}`;
                 const isPartial = item.hasFundingData === false || item.hasOpenInterestData === false;
-                
+                // HL 的 RWA 合约在 xyz builder dex 上，展示时去掉 dex 前缀（数据层仍用完整 symbol 做 key / 查历史）
+                const displaySymbol = item.symbol.replace(/^xyz:/i, '');
+
                 return (
                   <>
                     <tr 
@@ -311,7 +313,7 @@ export default function PerpTable({ data }: PerpTableProps) {
                     <td className="px-4 py-3 whitespace-nowrap pl-6">
                       <div
                         className="flex items-center"
-                        title={item.coinName || item.symbol.replace('USDT', '')}
+                        title={item.coinName || displaySymbol.replace('USDT', '')}
                       >
                         {item.coinImage ? (
                           <img
@@ -321,14 +323,14 @@ export default function PerpTable({ data }: PerpTableProps) {
                           />
                         ) : (
                           <div className="w-6 h-6 rounded-full bg-brand-surface border border-brand-border flex items-center justify-center text-[10px] font-bold text-brand-text-secondary group-hover:border-brand-accent/30 group-hover:text-brand-accent transition-colors">
-                            {item.symbol.substring(0, 1)}
+                            {displaySymbol.substring(0, 1)}
                           </div>
                         )}
                       </div>
                     </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-secondary font-mono">
                         <div className="flex items-center gap-2">
-                          <span>{item.symbol}</span>
+                          <span>{displaySymbol}</span>
                           {isPartial && (
                             <span
                               className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border border-brand-border text-brand-text-muted bg-brand-surfaceHighlight/60"
@@ -342,10 +344,14 @@ export default function PerpTable({ data }: PerpTableProps) {
                       <td className="px-4 py-3 whitespace-nowrap">
                         <span className={`
                           inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border
-                          ${item.exchange === 'Binance' 
-                            ? 'bg-[#FCD535]/10 text-[#FCD535] border-[#FCD535]/20' 
+                          ${item.exchange === 'Binance'
+                            ? 'bg-[#FCD535]/10 text-[#FCD535] border-[#FCD535]/20'
                             : item.exchange === 'OKX'
                             ? 'bg-[#FFFFFF]/10 text-[#FFFFFF] border-[#FFFFFF]/20'
+                            : item.exchange === 'Hyperliquid'
+                            ? 'bg-violet-500/10 text-violet-400 border-violet-500/20'
+                            : item.exchange === 'Aster'
+                            ? 'bg-orange-500/10 text-orange-400 border-orange-500/20'
                             : 'bg-brand-info/10 text-brand-info border-brand-info/20'}
                         `}>
                           {item.exchange}
