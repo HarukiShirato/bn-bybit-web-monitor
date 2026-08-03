@@ -51,3 +51,4 @@ next-env.d.ts
 /scripts/data/
 data/coin-icons.json
 data/icon-map.json
+data/icons/

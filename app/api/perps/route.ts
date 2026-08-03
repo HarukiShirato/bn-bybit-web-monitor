@@ -8,8 +8,10 @@ import { getBatchMarketDataForSymbols } from '@/lib/marketData';
 import { resolveIcons, baseOfSymbol, STOCK_TICKERS } from '@/lib/coinIcons';
 import { get7dAprMap } from '@/lib/funding7d';
 
-// ISR: 每 120 秒后台自动重新验证
-export const revalidate = 120;
+// 必须在运行时执行：这个路由会把图标抓到本地磁盘，构建期预渲染的话
+// 下载任务会随构建进程一起消失。路由内部已有 60s 进程级缓存兜住压力。
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 export const maxDuration = 60;
 
 /** 带超时的 Promise 包装 */

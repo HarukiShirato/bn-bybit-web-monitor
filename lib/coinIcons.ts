@@ -1,6 +1,7 @@
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import { localIconFor, isDeadIcon } from './iconStore';
 
 /**
  * 币种图标兜底源：Binance 公开资产表（1000+ 币，无需 key）。
@@ -187,15 +188,33 @@ export async function resolveIcons(requests: IconRequest[]): Promise<Map<string,
   const pinned = loadSticky();
   const out = new Map<string, string>();
   let added = 0;
+  let localized = false;
 
   for (const req of requests) {
     const base = baseOfSymbol(req.symbol);
-    if (!base) continue;
+    // 只接受正常的币种/股票代码，避免空 base 生成 coin_.png 这种垃圾条目
+    if (!base || !/^[A-Z0-9]{1,15}$/.test(base)) continue;
 
     const key = `${req.isTradFi ? 'stock' : 'coin'}:${base}`;
     const already = pinned.get(key);
     if (already) {
-      out.set(req.symbol, already);
+      // 已经抓到服务器上就走本地地址，否则用外链并在后台继续抓
+      if (already.startsWith('/api/icon/')) {
+        out.set(req.symbol, already);
+        continue;
+      }
+      const local = localIconFor(key, already);
+      if (local) {
+        pinned.set(key, local);
+        localized = true;
+        out.set(req.symbol, local);
+      } else if (isDeadIcon(key)) {
+        // 抓不下来的（多半是上游 404 占位图）就别再让前端去撞了
+        pinned.delete(key);
+        localized = true;
+      } else {
+        out.set(req.symbol, already);
+      }
       continue;
     }
 
@@ -208,15 +227,16 @@ export async function resolveIcons(requests: IconRequest[]): Promise<Map<string,
     }
 
     if (url) {
-      pinned.set(key, url);
-      out.set(req.symbol, url);
+      const local = localIconFor(key, url);
+      pinned.set(key, local || url);
+      out.set(req.symbol, local || url);
       added++;
     }
   }
 
-  if (added > 0) {
+  if (added > 0 || localized) {
     saveSticky(pinned);
-    console.log(`[coinIcons] pinned ${added} new icons (${pinned.size} total)`);
+    console.log(`[coinIcons] pinned ${added} new (${pinned.size} total)`);
   }
   return out;
 }
