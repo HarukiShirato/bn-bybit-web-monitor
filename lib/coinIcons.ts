@@ -137,16 +137,86 @@ function coinCapIcon(base: string): string {
   return `https://assets.coincap.io/assets/icons/${base.toLowerCase()}@2x.png`;
 }
 
-/** 给一批合约符号补图标；已有图标的不动 */
-export async function fillMissingIcons(
-  symbols: string[]
-): Promise<Map<string, string>> {
+/* ── 粘性图标解析 ──
+   一旦某个币/股票定下了图标就一直用它，不再因为上游波动而更换：
+   CoinGecko 是随机限流的，之前同一个 ticker 会在不同刷新之间换图，
+   甚至同一次响应里各交易所显示不同的图。
+   结果按「种类:base」落盘（跨交易所天然一致），删掉 data/icon-map.json 可重来。 */
+const STICKY_FILE = path.join(process.cwd(), 'data', 'icon-map.json');
+
+let sticky: Map<string, string> | null = null;
+
+function loadSticky(): Map<string, string> {
+  if (sticky) return sticky;
+  try {
+    if (fs.existsSync(STICKY_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(STICKY_FILE, 'utf-8'));
+      sticky = new Map(Object.entries(raw as Record<string, string>));
+    } else {
+      sticky = new Map();
+    }
+  } catch {
+    sticky = new Map();
+  }
+  return sticky;
+}
+
+function saveSticky(map: Map<string, string>) {
+  try {
+    const dir = path.dirname(STICKY_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(STICKY_FILE, JSON.stringify(Object.fromEntries(map)));
+  } catch (e: any) {
+    console.error('[coinIcons] save sticky failed:', e.message);
+  }
+}
+
+export interface IconRequest {
+  symbol: string;
+  isTradFi?: boolean;
+  /** CoinGecko 已经给出的图，仅作为 Binance 之后的备选 */
+  fallback?: string;
+}
+
+/**
+ * 解析一批合约的图标，返回 symbol -> url。
+ * 优先级：已定下的粘性结果 > Binance（资产表 / bStocks）> CoinGecko > CoinCap / FMP。
+ */
+export async function resolveIcons(requests: IconRequest[]): Promise<Map<string, string>> {
   const icons = await getCoinIconMap();
+  const pinned = loadSticky();
   const out = new Map<string, string>();
-  for (const sym of symbols) {
-    const base = baseOfSymbol(sym);
+  let added = 0;
+
+  for (const req of requests) {
+    const base = baseOfSymbol(req.symbol);
     if (!base) continue;
-    out.set(sym, icons.get(base) || coinCapIcon(base));
+
+    const key = `${req.isTradFi ? 'stock' : 'coin'}:${base}`;
+    const already = pinned.get(key);
+    if (already) {
+      out.set(req.symbol, already);
+      continue;
+    }
+
+    let url: string | null = null;
+    if (req.isTradFi) {
+      url = stockIcon(base, icons);
+    } else {
+      // Binance 自己的资产表优先，其次 CoinGecko，最后 CoinCap 拼接地址
+      url = icons.get(base) || req.fallback || coinCapIcon(base);
+    }
+
+    if (url) {
+      pinned.set(key, url);
+      out.set(req.symbol, url);
+      added++;
+    }
+  }
+
+  if (added > 0) {
+    saveSticky(pinned);
+    console.log(`[coinIcons] pinned ${added} new icons (${pinned.size} total)`);
   }
   return out;
 }
