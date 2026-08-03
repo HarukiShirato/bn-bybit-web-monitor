@@ -367,21 +367,17 @@ export default function Home() {
   const currentLastUpdate = activeTab === 'perps' ? lastUpdate : activeTab === 'earn' ? earnLastUpdate : optionsLastUpdate;
 
   return (
-    <div className="min-h-screen bg-brand-dark relative overflow-x-hidden selection:bg-brand-accent/30">
-       {/* Decorative Background Elements */}
-       <div className="absolute top-0 left-0 w-full h-96 bg-gradient-to-b from-brand-surface/20 to-transparent pointer-events-none" />
-       <div className="absolute -top-24 -right-24 w-96 h-96 bg-brand-accent/5 rounded-full blur-3xl pointer-events-none" />
-       <div className="absolute top-48 -left-24 w-72 h-72 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
-
-      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8 relative z-10">
+    <div className="min-h-screen bg-brand-dark relative overflow-x-hidden selection:bg-brand-surfaceHighlight">
+      {/* 极简风：不要装饰性光斑与渐变底 */}
+      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-5 relative z-10">
         {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-10">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6 pb-4 border-b border-brand-border">
            <div>
-             <h1 className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-brand-text-primary via-brand-text-primary to-brand-text-secondary tracking-tight">
-               Perp Analytics
+             <h1 className="text-base font-semibold text-brand-text-primary">
+               perp analytics
              </h1>
-             <p className="mt-2 text-brand-text-secondary text-lg">
-               Real-time monitoring for perpetual contracts & flexible earn rates
+             <p className="mt-1 text-brand-text-muted">
+               real-time monitoring for perpetual contracts &amp; flexible earn rates
              </p>
            </div>
 

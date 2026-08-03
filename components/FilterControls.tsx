@@ -82,7 +82,7 @@ export default function FilterControls({
                 onChange={(e) => onMinOiChange(Number(e.target.value))}
                 className="w-full absolute h-1.5 rounded-full appearance-none cursor-pointer bg-brand-border z-10"
                 style={{
-                  background: `linear-gradient(to right, #0B99FF ${percentage}%, #2B3139 ${percentage}%)`
+                  background: `linear-gradient(to right, #FFFFFF ${percentage}%, #27272A ${percentage}%)`
                 }}
               />
               {/* 悬停提示：告知用户滑块最大范围 */}
@@ -95,7 +95,7 @@ export default function FilterControls({
                   height: 14px;
                   width: 14px;
                   border-radius: 50%;
-                  background: #0B99FF;
+                  background: #FFFFFF;
                   cursor: pointer;
                   margin-top: 0px;
                   border: 2px solid #fff;
@@ -106,7 +106,7 @@ export default function FilterControls({
                   width: 14px;
                   border: 2px solid #fff;
                   border-radius: 50%;
-                  background: #0B99FF;
+                  background: #FFFFFF;
                   cursor: pointer;
                 }
               `}</style>

@@ -72,13 +72,15 @@ interface EarnTableProps {
   data: CombinedEarnRow[];
 }
 
+// 极简风：交易所标签一律中性，颜色只留给有正负语义的数值
+const EXCHANGE_BADGE = 'bg-transparent text-brand-text-secondary border-brand-border';
 const exchangeColors: Record<string, string> = {
-  Binance: 'bg-[#FCD535]/10 text-[#FCD535] border-[#FCD535]/20',
-  Bybit: 'bg-brand-info/10 text-brand-info border-brand-info/20',
-  OKX: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-  Hyperliquid: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
-  Aster: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
-  Navi: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+  Binance: EXCHANGE_BADGE,
+  Bybit: EXCHANGE_BADGE,
+  OKX: EXCHANGE_BADGE,
+  Hyperliquid: EXCHANGE_BADGE,
+  Aster: EXCHANGE_BADGE,
+  Navi: EXCHANGE_BADGE,
 };
 
 /* ── Recent Funding Bars Component ── */
@@ -104,11 +106,14 @@ function RecentFundingBars({ asset }: { asset: string }) {
   if (!data || Object.keys(data).length === 0) return <div className="text-xs text-brand-text-muted py-2">No funding data</div>;
 
   const exchNames: Record<string, string> = { binance: 'Binance', bybit: 'Bybit', hyperliquid: 'HL', aster: 'Aster' };
+  // 正负两色走全站语义色，各交易所不再各用一套配色
+  const BAR_POS = '#10B981'; // emerald-500
+  const BAR_NEG = '#F43F5E'; // rose-500
   const exchColors: Record<string, { pos: string; neg: string }> = {
-    binance: { pos: '#22c55e', neg: '#ef4444' },
-    bybit: { pos: '#3b82f6', neg: '#f97316' },
-    hyperliquid: { pos: '#a78bfa', neg: '#f472b6' },
-    aster: { pos: '#fb923c', neg: '#e879f9' },
+    binance: { pos: BAR_POS, neg: BAR_NEG },
+    bybit: { pos: BAR_POS, neg: BAR_NEG },
+    hyperliquid: { pos: BAR_POS, neg: BAR_NEG },
+    aster: { pos: BAR_POS, neg: BAR_NEG },
   };
 
   // Format time to Beijing time (UTC+8)
@@ -143,7 +148,7 @@ function RecentFundingBars({ asset }: { asset: string }) {
               {rates.map((r, i) => {
                 const h = Math.max(2, Math.abs(r.rate) / maxAbs * barMaxH);
                 const isNeg = r.rate < 0;
-                const color = isNeg ? exchColors[exch]?.neg || '#ef4444' : exchColors[exch]?.pos || '#22c55e';
+                const color = isNeg ? exchColors[exch]?.neg || BAR_NEG : exchColors[exch]?.pos || BAR_POS;
                 const pct = (r.rate * 100).toFixed(4);
                 return (
                   <div key={i} className="flex flex-col items-center" style={{ width: 48 }}>

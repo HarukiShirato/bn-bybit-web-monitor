@@ -346,18 +346,8 @@ export default function PerpTable({ data }: PerpTableProps) {
                         </div>
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
-                        <span className={`
-                          inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border
-                          ${item.exchange === 'Binance'
-                            ? 'bg-[#FCD535]/10 text-[#FCD535] border-[#FCD535]/20'
-                            : item.exchange === 'OKX'
-                            ? 'bg-[#FFFFFF]/10 text-[#FFFFFF] border-[#FFFFFF]/20'
-                            : item.exchange === 'Hyperliquid'
-                            ? 'bg-violet-500/10 text-violet-400 border-violet-500/20'
-                            : item.exchange === 'Aster'
-                            ? 'bg-orange-500/10 text-orange-400 border-orange-500/20'
-                            : 'bg-brand-info/10 text-brand-info border-brand-info/20'}
-                        `}>
+                        {/* 极简风：交易所标签中性，颜色只留给有正负语义的数值 */}
+                        <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-normal border border-brand-border text-brand-text-secondary">
                           {item.exchange}
                         </span>
                       </td>
@@ -438,7 +428,7 @@ export default function PerpTable({ data }: PerpTableProps) {
                                       domain={['auto', 'auto']} 
                                     />
                                     <Tooltip content={<FundingTooltip intervalHours={item.fundingIntervalHours || 8} />} cursor={{ fill: 'rgba(255,255,255,0.05)' }} />
-                                    <ReferenceLine y={0} stroke="#2B3139" strokeDasharray="3 3" />
+                                    <ReferenceLine y={0} stroke="#27272A" strokeDasharray="3 3" />
                                     <Bar dataKey="rate" maxBarSize={10}>
                                       {historyData.map((entry, index) => (
                                         <Cell

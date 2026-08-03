@@ -8,30 +8,28 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // 极简终端风：纯黑底、纯白字、zinc 灰阶，颜色只留给有语义的数值
         brand: {
-          dark: '#0B0E11',    // Deepest background
-          surface: '#1E2329', // Card/Table background (slightly lighter)
-          surfaceHighlight: '#2B3139', // Hover states
-          border: '#2B3139',  // Borders
+          dark: '#000000',             // 页面底色
+          surface: '#000000',          // 卡片/表格与页面同色，靠边框分隔而不是色块
+          surfaceHighlight: '#18181B', // zinc-900，只用于 hover
+          border: '#27272A',           // zinc-800
           text: {
-            primary: '#EAECEF', // Headings
-            secondary: '#848E9C', // Subtitles/Meta
-            muted: '#474D57',   // Disabled/Placeholder
+            primary: '#FFFFFF',
+            secondary: '#A1A1AA',      // zinc-400
+            muted: '#52525B',          // zinc-600
           },
-          accent: '#F0B90B',  // Binance Yellow (classic crypto accent)
-          success: '#0ECB81', // Crypto Green
-          danger: '#F6465D',  // Crypto Red
-          info: '#1199FA',    // Blue for links/info
+          accent: '#FFFFFF',           // 强调 = 纯白，不再用币安黄
+          success: '#10B981',          // emerald-500
+          danger: '#F43F5E',           // rose-500
+          info: '#0EA5E9',             // sky-500
         }
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Roboto Mono', 'monospace'],
+        // 全站等宽：sans 也指向等宽栈，组件里的 font-sans / font-mono 落到同一字体
+        sans: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
       },
-      backgroundImage: {
-        'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'hero-glow': 'conic-gradient(from 180deg at 50% 50%, #161A1E 0deg, #0B0E11 180deg, #161A1E 360deg)',
-      }
     },
   },
   plugins: [],

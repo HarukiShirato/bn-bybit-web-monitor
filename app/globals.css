@@ -3,15 +3,17 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 234, 236, 239;
-  --background-start-rgb: 11, 14, 17;
-  --background-end-rgb: 11, 14, 17;
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 0, 0, 0;
+  --background-end-rgb: 0, 0, 0;
 }
 
 body {
-  @apply bg-brand-dark text-brand-text-primary antialiased font-sans;
-  background: #0B0E11;
+  @apply bg-brand-dark text-brand-text-primary antialiased font-mono;
+  background: #000000;
   min-height: 100vh;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 /* Custom Scrollbar */
@@ -25,22 +27,61 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-brand-border rounded-full;
+  @apply bg-brand-border;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-brand-text-muted;
 }
 
-/* Utilities for crypto look */
+/* ──────────────────────────────────────────────────────────────
+   极简终端风格重置
+   参考 taoli.tools：纯黑白、全站等宽、单一小字号、
+   直角、无阴影无玻璃感，靠 1px zinc-800 细线分隔而不是色块。
+   集中放在这里，组件里的 Tailwind 类不用逐个改。
+   ────────────────────────────────────────────────────────────── */
+
+/* 直角化（币种图标保持圆形，方形头像太怪） */
+[class*="rounded"]:not(img) {
+  border-radius: 0 !important;
+}
+img[class*="rounded-full"] {
+  border-radius: 9999px !important;
+}
+
+/* 去掉阴影 / 毛玻璃 / 渐变底 */
+[class*="shadow-"],
+[class*="drop-shadow"] {
+  box-shadow: none !important;
+  filter: none !important;
+}
+[class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+}
+
+/* 字号收敛到 xs 附近，只给标题留一点层级 */
+.text-sm { font-size: 12px; line-height: 1.35; }
+.text-base { font-size: 13px; line-height: 1.4; }
+.text-lg { font-size: 14px; line-height: 1.4; }
+.text-xl { font-size: 15px; line-height: 1.4; }
+.text-2xl, .text-3xl, .text-4xl { font-size: 17px; line-height: 1.3; }
+
+/* 表头：小写、弱化、不描粗 */
+thead th {
+  @apply text-brand-text-muted;
+  font-weight: 400 !important;
+  letter-spacing: 0;
+}
+
+/* Utilities */
 .glass-panel {
-  @apply bg-brand-surface/50 backdrop-blur-md border border-brand-border/50 shadow-xl;
+  @apply bg-brand-surface border border-brand-border;
 }
 
 .input-base {
-  @apply bg-brand-dark border border-brand-border text-brand-text-primary placeholder-brand-text-muted focus:border-brand-accent focus:ring-1 focus:ring-brand-accent outline-none transition-all duration-200;
+  @apply bg-brand-dark border border-brand-border text-brand-text-primary placeholder-brand-text-muted focus:border-brand-accent outline-none;
 }
 
 .table-row-hover {
-  @apply hover:bg-brand-surfaceHighlight transition-colors duration-150;
+  @apply hover:bg-brand-surfaceHighlight;
 }
