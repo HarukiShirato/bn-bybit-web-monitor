@@ -118,7 +118,7 @@ export default function EarnFilterControls({
               onChange={(e) => onMinOiChange(Number(e.target.value))}
               className="w-full absolute h-1.5 rounded-full appearance-none cursor-pointer bg-brand-border z-10"
               style={{
-                background: `linear-gradient(to right, #FFFFFF ${percentage}%, #27272A ${percentage}%)`
+                background: `linear-gradient(to right, #18181B ${percentage}%, #E4E4E7 ${percentage}%)`
               }}
             />
           </div>

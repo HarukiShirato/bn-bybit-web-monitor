@@ -8,21 +8,21 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // 极简终端风：纯黑底、纯白字、zinc 灰阶，颜色只留给有语义的数值
+        // 极简风（亮色）：白底、近黑字、zinc 灰阶，颜色只留给有语义的数值
         brand: {
-          dark: '#000000',             // 页面底色
-          surface: '#000000',          // 卡片/表格与页面同色，靠边框分隔而不是色块
-          surfaceHighlight: '#18181B', // zinc-900，只用于 hover
-          border: '#27272A',           // zinc-800
+          dark: '#FFFFFF',             // 页面底色
+          surface: '#FFFFFF',          // 卡片/表格与页面同色，靠边框分隔而不是色块
+          surfaceHighlight: '#F4F4F5', // zinc-100，只用于 hover
+          border: '#E4E4E7',           // zinc-200
           text: {
-            primary: '#FFFFFF',
-            secondary: '#A1A1AA',      // zinc-400
-            muted: '#52525B',          // zinc-600
+            primary: '#18181B',        // zinc-900，比纯黑柔和一点
+            secondary: '#52525B',      // zinc-600
+            muted: '#A1A1AA',          // zinc-400
           },
-          accent: '#FFFFFF',           // 强调 = 纯白，不再用币安黄
-          success: '#10B981',          // emerald-500
-          danger: '#F43F5E',           // rose-500
-          info: '#0EA5E9',             // sky-500
+          accent: '#18181B',           // 强调 = 近黑
+          success: '#059669',          // emerald-600（亮底上 500 太浅）
+          danger: '#E11D48',           // rose-600
+          info: '#0284C7',             // sky-600
         }
       },
       fontFamily: {

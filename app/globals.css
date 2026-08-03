@@ -3,14 +3,22 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 0, 0, 0;
-  --background-end-rgb: 0, 0, 0;
+  --foreground-rgb: 24, 24, 27;
+  --background-start-rgb: 255, 255, 255;
+  --background-end-rgb: 255, 255, 255;
+
+  /* 图表用色，和 tailwind 的 brand 色板保持一致 */
+  --chart-line: #18181B;
+  --chart-zero: #A1A1AA;
+  --chart-grid: #F4F4F5;
+  --chart-cross: #A1A1AA;
+  --chart-pos: #059669;
+  --chart-neg: #E11D48;
 }
 
 body {
   @apply bg-brand-dark text-brand-text-primary antialiased font-mono;
-  background: #000000;
+  background: #FFFFFF;
   min-height: 100vh;
   font-size: 12px;
   line-height: 1.35;

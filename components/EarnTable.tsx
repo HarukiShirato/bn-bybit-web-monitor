@@ -107,8 +107,8 @@ function RecentFundingBars({ asset }: { asset: string }) {
 
   const exchNames: Record<string, string> = { binance: 'Binance', bybit: 'Bybit', hyperliquid: 'HL', aster: 'Aster' };
   // 正负两色走全站语义色，各交易所不再各用一套配色
-  const BAR_POS = '#10B981'; // emerald-500
-  const BAR_NEG = '#F43F5E'; // rose-500
+  const BAR_POS = 'var(--chart-pos)';
+  const BAR_NEG = 'var(--chart-neg)';
   const exchColors: Record<string, { pos: string; neg: string }> = {
     binance: { pos: BAR_POS, neg: BAR_NEG },
     bybit: { pos: BAR_POS, neg: BAR_NEG },

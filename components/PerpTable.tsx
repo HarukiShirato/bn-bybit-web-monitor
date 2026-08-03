@@ -31,7 +31,7 @@ interface PerpTableProps {
 }
 
 /* ── 历史资金费折线 ──
-   手写 SVG：一条白线 + 零轴虚线，没有网格没有填充，和整体的终端风格一致。
+   手写 SVG：一条细线 + 零轴虚线，没有网格没有填充，和整体的终端风格一致。
    鼠标移上去出竖线和该结算点的读数（正绿负红）。 */
 function FundingLine({
   history,
@@ -140,7 +140,7 @@ function FundingLine({
                 x2={W}
                 y1={yAt(v)}
                 y2={yAt(v)}
-                stroke={v === 0 ? '#3F3F46' : '#18181B'}
+                stroke={v === 0 ? 'var(--chart-zero)' : 'var(--chart-grid)'}
                 strokeDasharray={v === 0 ? '3 3' : undefined}
                 vectorEffect="non-scaling-stroke"
               />
@@ -153,14 +153,14 @@ function FundingLine({
                 x2={xAt(i)}
                 y1={0}
                 y2={H}
-                stroke="#18181B"
+                stroke="var(--chart-grid)"
                 vectorEffect="non-scaling-stroke"
               />
             ))}
             <polyline
               points={points}
               fill="none"
-              stroke="#FFFFFF"
+              stroke="var(--chart-line)"
               strokeWidth={1}
               vectorEffect="non-scaling-stroke"
             />
@@ -171,14 +171,14 @@ function FundingLine({
                   x2={xAt(hover)}
                   y1={0}
                   y2={H}
-                  stroke="#52525B"
+                  stroke="var(--chart-cross)"
                   vectorEffect="non-scaling-stroke"
                 />
                 <circle
                   cx={xAt(hover)}
                   cy={yAt(hoveredRate)}
                   r={2.5}
-                  fill={hoveredRate >= 0 ? '#10B981' : '#F43F5E'}
+                  fill={hoveredRate >= 0 ? 'var(--chart-pos)' : 'var(--chart-neg)'}
                   vectorEffect="non-scaling-stroke"
                 />
               </>
