@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 
 export interface PerpData {
@@ -28,6 +28,10 @@ type SortOrder = 'asc' | 'desc';
 
 interface PerpTableProps {
   data: PerpData[];
+  /** 搜索词由页面持有（过滤在页面层做），表头只负责就地编辑 */
+  search?: string;
+  onSearchChange?: (value: string) => void;
+  totalCount?: number;
 }
 
 /* ── 币种图标 ──
@@ -434,7 +438,34 @@ const Countdown = ({ targetTime }: { targetTime: number }) => {
   return <span>{timeLeft}</span>;
 };
 
-export default function PerpTable({ data }: PerpTableProps) {
+export default function PerpTable({ data, search = '', onSearchChange, totalCount }: PerpTableProps) {
+  // SYMBOL 表头就地搜索：ctrl/cmd+F 激活，esc 退出
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!onSearchChange) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setSearchOpen(true);
+        // 等表头切换成 input 之后再聚焦
+        requestAnimationFrame(() => {
+          searchRef.current?.focus();
+          searchRef.current?.select();
+        });
+        return;
+      }
+      if (e.key === 'Escape' && searchOpen) {
+        onSearchChange('');
+        setSearchOpen(false);
+        searchRef.current?.blur();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onSearchChange, searchOpen]);
+
   const [sortKey, setSortKey] = useState<SortKey>('apr');
   const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
   
@@ -591,7 +622,51 @@ export default function PerpTable({ data }: PerpTableProps) {
           <thead>
             <tr className="bg-brand-surface">
               <Th id="symbol" className="pl-6">COIN</Th>
-              <Th id="symbol">SYMBOL</Th>
+              {searchOpen && onSearchChange ? (
+                <th className="px-4 py-3 text-left border-b border-brand-border">
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={searchRef}
+                      type="text"
+                      value={search}
+                      spellCheck={false}
+                      placeholder="search symbol or exchange…"
+                      onChange={e => onSearchChange(e.target.value)}
+                      onBlur={() => { if (!search) setSearchOpen(false); }}
+                      className="w-52 px-2 py-1 bg-brand-surface border border-brand-border text-brand-text-primary placeholder-brand-text-muted text-xs font-normal normal-case tracking-normal focus:outline-none focus:border-brand-text-secondary"
+                    />
+                    <span className="text-[10px] font-normal normal-case tracking-normal text-brand-text-muted whitespace-nowrap">
+                      {search ? `${data.length}${totalCount ? '/' + totalCount : ''} · all exch` : 'esc'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => { onSearchChange(''); setSearchOpen(false); }}
+                      className="text-brand-text-muted hover:text-brand-text-primary text-xs font-normal"
+                      title="close (esc)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </th>
+              ) : (
+                <Th id="symbol">
+                  <span className="flex items-center gap-1.5">
+                    SYMBOL
+                    <span
+                      role="button"
+                      title="search (ctrl/cmd+F)"
+                      onClick={e => {
+                        e.stopPropagation();
+                        setSearchOpen(true);
+                        requestAnimationFrame(() => searchRef.current?.focus());
+                      }}
+                      className="text-brand-text-muted hover:text-brand-text-primary font-normal normal-case"
+                    >
+                      ⌕
+                    </span>
+                  </span>
+                </Th>
+              )}
               <Th id="exchange">Exchange</Th>
               <Th id="fundingIntervalHours" align="center">Inter</Th>
               <Th id="openInterestValue" align="right">OI</Th>

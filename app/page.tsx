@@ -462,21 +462,12 @@ export default function Home() {
                  Loading market data...
               </div>
             ) : (
-              <>
-                <div className="mb-2 flex flex-wrap items-center gap-3 pl-6">
-                  <SearchBox
-                    value={searchQuery}
-                    onChange={setSearchQuery}
-                    hotkey={activeTab === 'perps'}
-                  />
-                  {searchQuery && (
-                    <span className="text-[11px] text-brand-text-muted">
-                      {filteredData.length} hits · all exchanges
-                    </span>
-                  )}
-                </div>
-                <PerpTable data={filteredData} />
-              </>
+              <PerpTable
+                data={filteredData}
+                search={searchQuery}
+                onSearchChange={setSearchQuery}
+                totalCount={data.length}
+              />
             )}
           </>
         )}
