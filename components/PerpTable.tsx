@@ -58,6 +58,18 @@ function FundingLine({
   const yAt = (v: number) => PAD + ((max - v) / span) * (H - 2 * PAD);
   const points = history.map((_, i) => `${xAt(i).toFixed(2)},${yAt(rates[i]).toFixed(2)}`).join(' ');
 
+  // 纵坐标刻度：max→min 等分，并强制带上零轴
+  const Y_TICKS = 5;
+  const yTicks = Array.from(
+    new Set([...Array.from({ length: Y_TICKS }, (_, i) => max - (span * i) / (Y_TICKS - 1)), 0])
+  ).sort((a, b) => b - a);
+
+  // 横坐标刻度：等距取样，点数不足时自动收敛
+  const X_TICKS = Math.min(6, history.length);
+  const xTickIdx = Array.from(
+    new Set(Array.from({ length: X_TICKS }, (_, i) => Math.round((i * (history.length - 1)) / (X_TICKS - 1))))
+  );
+
   const fmtTs = (ts: number) => {
     const d = new Date(ts);
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -96,63 +108,108 @@ function FundingLine({
         </span>
       </div>
 
-      <div
-        className="relative select-none"
-        style={{ height: H }}
-        onMouseMove={onMove}
-        onMouseLeave={() => setHover(null)}
-      >
-        <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-          {/* 零轴 */}
-          <line
-            x1={0}
-            x2={W}
-            y1={yAt(0)}
-            y2={yAt(0)}
-            stroke="#27272A"
-            strokeDasharray="3 3"
-            vectorEffect="non-scaling-stroke"
-          />
-          <polyline
-            points={points}
-            fill="none"
-            stroke="#FFFFFF"
-            strokeWidth={1}
-            vectorEffect="non-scaling-stroke"
-          />
-          {hover !== null && (
-            <>
+      <div className="flex">
+        {/* 纵坐标：刻度值贴着轴线，绝对定位对齐各自的 y */}
+        <div className="relative shrink-0" style={{ height: H, width: 62 }}>
+          {yTicks.map(v => (
+            <span
+              key={v}
+              className={`absolute right-1.5 -translate-y-1/2 text-[10px] ${
+                v === 0 ? 'text-brand-text-secondary' : 'text-brand-text-muted'
+              }`}
+              style={{ top: `${(yAt(v) / H) * 100}%` }}
+            >
+              {v.toFixed(4)}
+            </span>
+          ))}
+          <div className="absolute right-0 top-0 bottom-0 w-px bg-brand-border" />
+        </div>
+
+        <div
+          className="relative flex-1 select-none"
+          style={{ height: H }}
+          onMouseMove={onMove}
+          onMouseLeave={() => setHover(null)}
+        >
+          <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+            {/* 横向网格 */}
+            {yTicks.map(v => (
               <line
-                x1={xAt(hover)}
-                x2={xAt(hover)}
+                key={`h${v}`}
+                x1={0}
+                x2={W}
+                y1={yAt(v)}
+                y2={yAt(v)}
+                stroke={v === 0 ? '#3F3F46' : '#18181B'}
+                strokeDasharray={v === 0 ? '3 3' : undefined}
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+            {/* 纵向网格（对应横坐标刻度） */}
+            {xTickIdx.map(i => (
+              <line
+                key={`v${i}`}
+                x1={xAt(i)}
+                x2={xAt(i)}
                 y1={0}
                 y2={H}
-                stroke="#52525B"
+                stroke="#18181B"
                 vectorEffect="non-scaling-stroke"
               />
-              <circle
-                cx={xAt(hover)}
-                cy={yAt(hoveredRate)}
-                r={2.5}
-                fill={hoveredRate >= 0 ? '#10B981' : '#F43F5E'}
-                vectorEffect="non-scaling-stroke"
-              />
-            </>
-          )}
-        </svg>
-
-        {/* 轴标签放在 HTML 层，避免被 viewBox 拉伸 */}
-        <span className="absolute top-0 right-0 text-[10px] text-brand-text-muted">
-          {max.toFixed(4)}%
-        </span>
-        <span className="absolute bottom-0 right-0 text-[10px] text-brand-text-muted">
-          {min.toFixed(4)}%
-        </span>
+            ))}
+            <polyline
+              points={points}
+              fill="none"
+              stroke="#FFFFFF"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+            {hover !== null && (
+              <>
+                <line
+                  x1={xAt(hover)}
+                  x2={xAt(hover)}
+                  y1={0}
+                  y2={H}
+                  stroke="#52525B"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <circle
+                  cx={xAt(hover)}
+                  cy={yAt(hoveredRate)}
+                  r={2.5}
+                  fill={hoveredRate >= 0 ? '#10B981' : '#F43F5E'}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </>
+            )}
+          </svg>
+          <div className="absolute left-0 right-0 bottom-0 h-px bg-brand-border" />
+        </div>
       </div>
 
-      <div className="flex justify-between text-[10px] text-brand-text-muted mt-0.5">
-        <span>{fmtTs(history[0].time)}</span>
-        <span>{fmtTs(history[history.length - 1].time)}</span>
+      {/* 横坐标：刻度对齐各自的 x，首尾贴边不出界 */}
+      <div className="flex">
+        <div className="shrink-0" style={{ width: 62 }} />
+        <div className="relative flex-1 h-7">
+          {xTickIdx.map((idx, k) => {
+            const pct = (idx / (history.length - 1)) * 100;
+            const align = k === 0 ? 'translateX(0)' : k === xTickIdx.length - 1 ? 'translateX(-100%)' : 'translateX(-50%)';
+            const d = new Date(history[idx].time);
+            const pad = (n: number) => String(n).padStart(2, '0');
+            return (
+              <span
+                key={idx}
+                className="absolute top-0 text-[10px] text-brand-text-muted text-center leading-3"
+                style={{ left: `${pct}%`, transform: align }}
+              >
+                {`${pad(d.getMonth() + 1)}-${pad(d.getDate())}`}
+                <br />
+                {`${pad(d.getHours())}:${pad(d.getMinutes())}`}
+              </span>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
