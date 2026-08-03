@@ -153,3 +153,39 @@ async function getBinanceEarnFromBapi(): Promise<BinanceEarnProduct[]> {
 
   return results;
 }
+
+
+/**
+ * 从 staking-collector 保存的文件中读取 Binance earn 产品
+ * 避免每次 API 请求都调用 SAPI，防止 rate limit
+ */
+const FILE_CACHE_TTL = 60 * 1000;
+let fileCache: { data: BinanceEarnProduct[]; ts: number } | null = null;
+
+export async function getBinanceEarnProductsFromFile(): Promise<BinanceEarnProduct[]> {
+  if (fileCache && Date.now() - fileCache.ts < FILE_CACHE_TTL) return fileCache.data;
+  try {
+    const path = require("path");
+    const fs = require("fs");
+    const filePath = path.join(process.cwd(), "data", "staking-rewards.json");
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    const products: BinanceEarnProduct[] = [];
+    if (raw.binanceEarnProducts && Array.isArray(raw.binanceEarnProducts)) {
+      for (const p of raw.binanceEarnProducts) {
+        products.push({
+          asset: p.asset || "",
+          apr: p.apr || 0,
+          minPurchaseAmount: p.minPurchaseAmount || 0,
+          maxPurchaseAmount: null,
+          canPurchase: p.canPurchase !== false,
+        });
+      }
+    }
+    fileCache = { data: products, ts: Date.now() };
+    return products;
+  } catch (e: any) {
+    console.error("[binanceEarn] Failed to read from file:", e?.message);
+    // Fallback to live API
+    return getBinanceEarnProducts();
+  }
+}

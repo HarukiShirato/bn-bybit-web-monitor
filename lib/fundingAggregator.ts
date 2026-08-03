@@ -11,12 +11,18 @@ import path from 'path';
  */
 
 export interface FundingStats {
-  binance3d: number;
-  binance7d: number;
-  bybit3d: number;
-  bybit7d: number;
-  hyperliquid3d: number;
-  hyperliquid7d: number;
+  binance3d: number | null;
+  binance7d: number | null;
+  binance30d: number | null;
+  bybit3d: number | null;
+  bybit7d: number | null;
+  bybit30d: number | null;
+  hyperliquid3d: number | null;
+  hyperliquid7d: number | null;
+  hyperliquid30d: number | null;
+  okx3d: number | null;
+  okx7d: number | null;
+  okx30d: number | null;
 }
 
 const BINANCE_FAPI = 'https://www.binance.com';  // www proxy avoids 403
@@ -30,6 +36,7 @@ interface FundingHistoryData {
   binance: Record<string, SettledRate[]>;
   bybit: Record<string, { intervalHours: number; rates: SettledRate[] }>;
   hyperliquid: Record<string, SettledRate[]>;
+  okx: Record<string, SettledRate[]>;
   updatedAt: number;
 }
 
@@ -39,9 +46,15 @@ interface RateSnapshot {
   binance: Map<string, number>;
   bybit: Map<string, number>;
   hyperliquid: Map<string, number>;
+  okx: Map<string, number>;
   binanceOI: Map<string, number>;
   bybitOI: Map<string, number>;
   hyperliquidOI: Map<string, number>;
+  okxOI: Map<string, number>;
+  binanceVol: Map<string, number>;
+  bybitVol: Map<string, number>;
+  hyperliquidVol: Map<string, number>;
+  okxVol: Map<string, number>;
   timestamp: number;
 }
 
@@ -85,9 +98,10 @@ function getFundingHistory(): FundingHistoryData | null {
 }
 
 /* ── Bulk snapshot: Binance ── */
-async function fetchBinanceData(): Promise<{ rates: Map<string, number>; oi: Map<string, number> }> {
+async function fetchBinanceData(): Promise<{ rates: Map<string, number>; oi: Map<string, number>; vol: Map<string, number> }> {
   const rates = new Map<string, number>();
   const oi = new Map<string, number>();
+  const vol = new Map<string, number>();
   try {
     const res = await axios.get(`${BINANCE_FAPI}/fapi/v1/premiumIndex`, { timeout: 15000 });
     if (Array.isArray(res.data)) {
@@ -99,13 +113,25 @@ async function fetchBinanceData(): Promise<{ rates: Map<string, number>; oi: Map
   } catch (e: any) {
     console.error(`[funding] Binance premiumIndex failed: ${e.message}`);
   }
-  return { rates, oi };
+  try {
+    const tickerRes = await axios.get(`${BINANCE_FAPI}/fapi/v1/ticker/24hr`, { timeout: 15000 });
+    if (Array.isArray(tickerRes.data)) {
+      for (const item of tickerRes.data) {
+        const v = parseFloat(item.quoteVolume || '0');
+        if (v > 0) vol.set(item.symbol, v);
+      }
+    }
+  } catch (e: any) {
+    console.error(`[funding] Binance ticker24hr failed: ${e.message}`);
+  }
+  return { rates, oi, vol };
 }
 
 /* ── Bulk snapshot: Bybit ── */
-async function fetchBybitData(): Promise<{ rates: Map<string, number>; oi: Map<string, number> }> {
+async function fetchBybitData(): Promise<{ rates: Map<string, number>; oi: Map<string, number>; vol: Map<string, number> }> {
   const rates = new Map<string, number>();
   const oi = new Map<string, number>();
+  const vol = new Map<string, number>();
   try {
     const res = await axios.get(`${BYBIT_API}/v5/market/tickers`, {
       params: { category: 'linear' },
@@ -117,20 +143,23 @@ async function fetchBybitData(): Promise<{ rates: Map<string, number>; oi: Map<s
         rates.set(item.symbol, parseFloat(item.fundingRate || '0'));
         const oiValue = parseFloat(item.openInterestValue || '0');
         if (oiValue > 0) oi.set(item.symbol, oiValue);
+        const volValue = parseFloat(item.turnover24h || '0');
+        if (volValue > 0) vol.set(item.symbol, volValue);
       }
     }
     console.log(`[funding] Bybit tickers: ${rates.size} symbols, ${oi.size} with OI`);
   } catch (e: any) {
     console.error(`[funding] Bybit tickers failed: ${e.message}`);
   }
-  return { rates, oi };
+  return { rates, oi, vol };
 }
 
 
 /* ── Bulk snapshot: Hyperliquid ── */
-async function fetchHyperliquidData(): Promise<{ rates: Map<string, number>; oi: Map<string, number> }> {
+async function fetchHyperliquidData(): Promise<{ rates: Map<string, number>; oi: Map<string, number>; vol: Map<string, number> }> {
   const rates = new Map<string, number>();
   const oi = new Map<string, number>();
+  const vol = new Map<string, number>();
   try {
     const res = await axios.post('https://api.hyperliquid.xyz/info',
       { type: 'metaAndAssetCtxs' },
@@ -153,12 +182,84 @@ async function fetchHyperliquidData(): Promise<{ rates: Map<string, number>; oi:
       const oiVal = parseFloat(ctx.openInterest || '0');
       const markPx = parseFloat(ctx.markPx || '0');
       if (oiVal > 0 && markPx > 0) oi.set(symbol, oiVal * markPx);
+      const dayVol = parseFloat(ctx.dayNtlVlm || '0');
+      if (dayVol > 0) vol.set(symbol, dayVol);
     }
     console.log(`[funding] Hyperliquid: ${rates.size} symbols, ${oi.size} with OI`);
   } catch (e: any) {
     console.error(`[funding] Hyperliquid fetch failed: ${e.message}`);
   }
-  return { rates, oi };
+  return { rates, oi, vol };
+}
+
+
+/* ── Bulk snapshot: OKX ── */
+async function fetchOkxData(): Promise<{ rates: Map<string, number>; oi: Map<string, number>; vol: Map<string, number> }> {
+  const rates = new Map<string, number>();
+  const oi = new Map<string, number>();
+  const vol = new Map<string, number>();
+  try {
+    const [tickerRes, fundingRes, oiRes] = await Promise.all([
+      axios.get('https://www.okx.com/api/v5/market/tickers', {
+        params: { instType: 'SWAP' },
+        timeout: 15000,
+      }),
+      axios.get('https://www.okx.com/api/v5/public/funding-rate', {
+        params: { instId: 'BTC-USDT-SWAP' },  // just to get one sample; rates come from file
+        timeout: 5000,
+      }).catch(() => ({ data: { data: [] } })),
+      axios.get('https://www.okx.com/api/v5/public/open-interest', {
+        params: { instType: 'SWAP' },
+        timeout: 15000,
+      }),
+    ]);
+
+    // Build price map from tickers
+    const priceMap = new Map<string, number>();
+    if (tickerRes.data?.data) {
+      for (const item of tickerRes.data.data) {
+        if (!item.instId.endsWith('-USDT-SWAP')) continue;
+        const base = item.instId.split('-')[0];
+        const symbol = base + 'USDT';
+        priceMap.set(symbol, parseFloat(item.last || '0'));
+        const volCcy = parseFloat(item.volCcy24h || '0');
+        const lastPx = parseFloat(item.last || '0');
+        if (volCcy > 0 && lastPx > 0) vol.set(symbol, volCcy * lastPx);
+      }
+    }
+
+    // Read funding rates from file (collector writes these)
+    try {
+      const dataFile = path.join(process.cwd(), 'data', 'funding-history.json');
+      if (fs.existsSync(dataFile)) {
+        const raw = JSON.parse(fs.readFileSync(dataFile, 'utf-8'));
+        const okxHist = raw.okx || {};
+        for (const [symbol, rateList] of Object.entries(okxHist)) {
+          if (Array.isArray(rateList) && rateList.length > 0) {
+            const latest = rateList[rateList.length - 1] as { rate: number };
+            rates.set(symbol, latest.rate);
+          }
+        }
+      }
+    } catch {}
+
+    // OI in USDT value
+    if (oiRes.data?.data) {
+      for (const item of oiRes.data.data) {
+        if (!item.instId.endsWith('-USDT-SWAP')) continue;
+        const base = item.instId.split('-')[0];
+        const symbol = base + 'USDT';
+        const oiCcy = parseFloat(item.oiCcy || '0');
+        const price = priceMap.get(symbol) || 0;
+        const oiValue = oiCcy * price;
+        if (oiValue > 0) oi.set(symbol, oiValue);
+      }
+    }
+    console.log(`[funding] OKX: ${rates.size} symbols, ${oi.size} with OI`);
+  } catch (e: any) {
+    console.error(`[funding] OKX fetch failed: ${e.message}`);
+  }
+  return { rates, oi, vol };
 }
 
 async function getLatestSnapshot(): Promise<RateSnapshot> {
@@ -166,18 +267,25 @@ async function getLatestSnapshot(): Promise<RateSnapshot> {
   if (store.snapshot && Date.now() - store.snapshot.timestamp < SNAPSHOT_CACHE_TTL) {
     return store.snapshot;
   }
-  const [binanceData, bybitData, hlData] = await Promise.all([
+  const [binanceData, bybitData, hlData, okxData] = await Promise.all([
     fetchBinanceData(),
     fetchBybitData(),
     fetchHyperliquidData(),
+    fetchOkxData(),
   ]);
   const snapshot: RateSnapshot = {
     binance: binanceData.rates,
     bybit: bybitData.rates,
     hyperliquid: hlData.rates,
+    okx: okxData.rates,
     binanceOI: binanceData.oi,
     bybitOI: bybitData.oi,
     hyperliquidOI: hlData.oi,
+    okxOI: okxData.oi,
+    binanceVol: binanceData.vol,
+    bybitVol: bybitData.vol,
+    hyperliquidVol: hlData.vol,
+    okxVol: okxData.vol,
     timestamp: Date.now(),
   };
   store.snapshot = snapshot;
@@ -231,36 +339,50 @@ export async function batchGetFundingStats(assets: string[]): Promise<Map<string
     const bySymbol = is1000x ? `1000${upper}USDT` : `${upper}USDT`;
 
     // Binance: 从文件读取实际结算历史
-    let binance3d = 0, binance7d = 0;
+    let binance3d: number | null = null, binance7d: number | null = null, binance30d: number | null = null;
     const bnHist = histData?.binance?.[bnSymbol];
     if (bnHist && bnHist.length > 0) {
       const bnInterval = detectIntervalHours(bnHist);
       binance3d = calcAprFromSettled(bnHist, 3, bnInterval);
       binance7d = calcAprFromSettled(bnHist, 7, bnInterval);
+      binance30d = calcAprFromSettled(bnHist, 30, bnInterval);
     }
 
     // Bybit: 从文件读取实际结算历史
-    let bybit3d = 0, bybit7d = 0;
+    let bybit3d: number | null = null, bybit7d: number | null = null, bybit30d: number | null = null;
     const byData = histData?.bybit?.[bySymbol];
     if (byData && byData.rates && byData.rates.length > 0) {
       const intervalH = byData.intervalHours || 8;
       bybit3d = calcAprFromSettled(byData.rates, 3, intervalH);
       bybit7d = calcAprFromSettled(byData.rates, 7, intervalH);
+      bybit30d = calcAprFromSettled(byData.rates, 30, intervalH);
     }
 
     // Hyperliquid: 从文件读取，1h结算间隔
-    let hyperliquid3d = 0, hyperliquid7d = 0;
+    let hyperliquid3d: number | null = null, hyperliquid7d: number | null = null, hyperliquid30d: number | null = null;
     const hlHist = histData?.hyperliquid?.[upper + 'USDT'];
     if (hlHist && hlHist.length > 0) {
       hyperliquid3d = calcAprFromSettled(hlHist, 3, 1);
       hyperliquid7d = calcAprFromSettled(hlHist, 7, 1);
+      hyperliquid30d = calcAprFromSettled(hlHist, 30, 1);
     }
 
-    result.set(upper, { binance3d, binance7d, bybit3d, bybit7d, hyperliquid3d, hyperliquid7d });
+
+    // OKX: 从文件读取，默认 8h 结算间隔
+    let okx3d: number | null = null, okx7d: number | null = null, okx30d: number | null = null;
+    const okxHist = histData?.okx?.[upper + 'USDT'];
+    if (okxHist && okxHist.length > 0) {
+      const okxInterval = detectIntervalHours(okxHist);
+      okx3d = calcAprFromSettled(okxHist, 3, okxInterval);
+      okx7d = calcAprFromSettled(okxHist, 7, okxInterval);
+      okx30d = calcAprFromSettled(okxHist, 30, okxInterval);
+    }
+
+    result.set(upper, { binance3d, binance7d, binance30d, bybit3d, bybit7d, bybit30d, hyperliquid3d, hyperliquid7d, hyperliquid30d, okx3d, okx7d, okx30d });
   }
 
   const withData = [...result.values()].filter(s =>
-    s.binance3d !== 0 || s.binance7d !== 0 || s.bybit3d !== 0 || s.bybit7d !== 0
+    s.binance3d != null || s.binance7d != null || s.bybit3d != null || s.bybit7d != null
   ).length;
   const bnSymCount = histData ? Object.keys(histData.binance || {}).length : 0;
   const bySymCount = histData ? Object.keys(histData.bybit || {}).length : 0;
@@ -270,10 +392,36 @@ export async function batchGetFundingStats(assets: string[]): Promise<Map<string
   return result;
 }
 
+export interface ExchangeVolume {
+  binance: number;
+  bybit: number;
+  hyperliquid: number;
+  okx: number;
+}
+
+export async function getVolumeMap(assets: string[]): Promise<Map<string, ExchangeVolume>> {
+  const snapshot = await getLatestSnapshot();
+  const result = new Map<string, ExchangeVolume>();
+  for (const a of assets) {
+    const upper = a.toUpperCase();
+    const is1000x = EXCHANGE_1000X_ASSETS.has(upper);
+    const symbol = is1000x ? `1000${upper}USDT` : `${upper}USDT`;
+    const binanceVol = snapshot.binanceVol.get(symbol) ?? 0;
+    const bybitVol = snapshot.bybitVol.get(symbol) ?? 0;
+    const hlVol = snapshot.hyperliquidVol.get(symbol) ?? 0;
+    const okxVol = snapshot.okxVol.get(symbol) ?? 0;
+    if (binanceVol > 0 || bybitVol > 0 || hlVol > 0 || okxVol > 0) {
+      result.set(upper, { binance: binanceVol, bybit: bybitVol, hyperliquid: hlVol, okx: okxVol });
+    }
+  }
+  return result;
+}
+
 export interface ExchangeOI {
   binance: number;
   bybit: number;
   hyperliquid: number;
+  okx: number;
 }
 
 /**
@@ -300,8 +448,9 @@ export async function getOpenInterestMap(assets: string[]): Promise<Map<string, 
     const binanceOI = fileBinanceOI[symbol] ?? snapshot.binanceOI.get(symbol) ?? 0;
     const bybitOI = snapshot.bybitOI.get(symbol) ?? 0;
     const hlOI = snapshot.hyperliquidOI.get(symbol) ?? 0;
-    if (binanceOI > 0 || bybitOI > 0 || hlOI > 0) {
-      result.set(upper, { binance: binanceOI, bybit: bybitOI, hyperliquid: hlOI });
+    const okxOI = snapshot.okxOI.get(symbol) ?? 0;
+    if (binanceOI > 0 || bybitOI > 0 || hlOI > 0 || okxOI > 0) {
+      result.set(upper, { binance: binanceOI, bybit: bybitOI, hyperliquid: hlOI, okx: okxOI });
     }
   }
 

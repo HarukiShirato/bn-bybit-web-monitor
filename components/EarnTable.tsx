@@ -14,6 +14,7 @@ export interface FundingRate {
   exchange: string;
   apr3d: number;
   apr7d: number;
+  apr30d: number;
 }
 
 export interface ArbitrageInfo {
@@ -39,8 +40,10 @@ export interface CombinedEarnRow {
   funding: FundingRate[];
   bestFunding3d: number;
   bestFunding7d: number;
+  bestFunding30d: number;
   bestFundingExchange3d: string;
   bestFundingExchange7d: string;
+  bestFundingExchange30d: string;
   combined3d: number;
   combined7d: number;
   coinImage?: string;
@@ -48,13 +51,19 @@ export interface CombinedEarnRow {
   binanceOI: number | null;
   bybitOI: number | null;
   hyperliquidOI: number | null;
+  okxOI: number | null;
+  binanceVol: number | null;
+  bybitVol: number | null;
+  hyperliquidVol: number | null;
+  okxVol: number | null;
+  bestVolume: number | null;
   marketCap: number | null;
   stakingApr: number | null;
   stakingUnstakingDays: number | null;
   arbitrage: ArbitrageInfo | null;
 }
 
-type SortKey = 'asset' | 'bestEarn3d' | 'bestEarn7d' | 'bestFunding3d' | 'bestFunding7d' | 'combined3d' | 'combined7d' | 'marketCap' | 'none';
+type SortKey = 'asset' | 'bestEarn3d' | 'bestEarn7d' | 'bestFunding3d' | 'bestFunding7d' | 'bestFunding30d' | 'combined3d' | 'combined7d' | 'marketCap' | 'bestVolume' | 'none';
 type SortOrder = 'asc' | 'desc';
 
 interface EarnTableProps {
@@ -65,6 +74,7 @@ const exchangeColors: Record<string, string> = {
   Binance: 'bg-[#FCD535]/10 text-[#FCD535] border-[#FCD535]/20',
   Bybit: 'bg-brand-info/10 text-brand-info border-brand-info/20',
   OKX: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  Navi: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
 };
 
 /* ── Recent Funding Bars Component ── */
@@ -277,9 +287,9 @@ export default function EarnTable({ data }: EarnTableProps) {
               <Th id="bestEarn7d" align="right">EARN</Th>
               <Th id="bestFunding3d" align="right">FUND 3D</Th>
               <Th id="bestFunding7d" align="right">FUND 7D</Th>
-              <Th id="combined3d" align="right">COMBINED 3D</Th>
-              <Th id="combined7d" align="right">COMBINED 7D</Th>
-              <Th id="marketCap" align="right" className="pr-6">M-Cap</Th>
+              <Th id="bestFunding30d" align="right">FUND 30D</Th>
+              <Th id="marketCap" align="right">M-Cap</Th>
+              <Th id="bestVolume" align="right" className="pr-6">VOL 24H</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-brand-border bg-brand-dark/50">
@@ -363,23 +373,36 @@ export default function EarnTable({ data }: EarnTableProps) {
                         )}
                       </td>
 
-                      {/* COMBINED 3D */}
+                      {/* FUND 30D */}
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-right font-mono tracking-tight">
-                        <span className={`font-semibold ${pctColor(item.combined3d)}`}>
-                          {item.combined3d !== 0 ? formatPct(item.combined3d) : formatPct(item.bestEarn7d)}
-                        </span>
-                      </td>
-
-                      {/* COMBINED 7D */}
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-right font-mono tracking-tight">
-                        <span className={`font-semibold ${pctColor(item.combined7d)}`}>
-                          {item.combined7d !== 0 ? formatPct(item.combined7d) : formatPct(item.bestEarn7d)}
-                        </span>
+                        {item.bestFunding30d !== 0 ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            <span className={pctColor(item.bestFunding30d)}>{formatPct(item.bestFunding30d)}</span>
+                            {item.bestFundingExchange30d && <ExchangeBadge name={item.bestFundingExchange30d} />}
+                          </div>
+                        ) : (
+                          <span className="text-brand-text-muted">{'\u2014'}</span>
+                        )}
                       </td>
 
                       {/* M-Cap */}
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-secondary text-right font-mono tracking-tight pr-6">
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-secondary text-right font-mono tracking-tight">
                         {formatNumber(item.marketCap, 1)}
+                      </td>
+
+                      {/* VOL 24H */}
+                      <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-secondary text-right font-mono tracking-tight pr-6">
+                        {(() => {
+                          const vols: { ex: string; vol: number }[] = [];
+                          if (item.binanceVol && item.binanceVol > 0) vols.push({ ex: 'bn', vol: item.binanceVol });
+                          if (item.bybitVol && item.bybitVol > 0) vols.push({ ex: 'by', vol: item.bybitVol });
+                          if (item.hyperliquidVol && item.hyperliquidVol > 0) vols.push({ ex: 'hype', vol: item.hyperliquidVol });
+                          if (item.okxVol && item.okxVol > 0) vols.push({ ex: 'okx', vol: item.okxVol });
+                          if (vols.length === 0) return <span className="text-brand-text-muted">{'\u2014'}</span>;
+                          vols.sort((a, b) => b.vol - a.vol);
+                          const top = vols[0];
+                          return <span>{top.ex}-{formatNumber(top.vol, 1)}</span>;
+                        })()}
                       </td>
                     </tr>
 
@@ -472,6 +495,9 @@ export default function EarnTable({ data }: EarnTableProps) {
                                   {(item.hyperliquidOI != null && item.hyperliquidOI > 0) && (
                                     <span className="text-xs text-brand-text-muted font-mono">HL OI: {formatNumber(item.hyperliquidOI, 1)}</span>
                                   )}
+                                  {(item.okxOI != null && item.okxOI > 0) && (
+                                    <span className="text-xs text-brand-text-muted font-mono">OKX OI: {formatNumber(item.okxOI, 1)}</span>
+                                  )}
                                 </div>
                                 <div className="space-y-2">
                                   {item.funding.map((fr) => (
@@ -482,6 +508,8 @@ export default function EarnTable({ data }: EarnTableProps) {
                                         <span className={pctColor(fr.apr3d)}>{formatPct(fr.apr3d)}</span>
                                         <span className="text-brand-text-secondary text-xs">7D:</span>
                                         <span className={pctColor(fr.apr7d)}>{formatPct(fr.apr7d)}</span>
+                                        <span className="text-brand-text-secondary text-xs">30D:</span>
+                                        <span className={pctColor(fr.apr30d)}>{formatPct(fr.apr30d)}</span>
                                       </div>
                                     </div>
                                   ))}

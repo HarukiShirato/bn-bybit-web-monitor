@@ -101,6 +101,37 @@ export async function getMarketCapsFromFile(): Promise<Map<string, FileMcap>> {
 }
 
 
+export interface NaviLendingRate {
+  apr: number;
+  apyBase: number;
+  apyReward: number;
+  tvl: number;
+}
+
+let naviCache: { data: Map<string, NaviLendingRate>; ts: number } | null = null;
+
+export async function getNaviLendingRates(): Promise<Map<string, NaviLendingRate>> {
+  if (naviCache && Date.now() - naviCache.ts < FILE_CACHE_TTL) return naviCache.data;
+
+  const map = new Map<string, NaviLendingRate>();
+  try {
+    const raw = fs.existsSync(DATA_FILE) ? JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")) : null;
+    if (raw?.naviLending?.rates) {
+      for (const [symbol, data] of Object.entries(raw.naviLending.rates)) {
+        const d = data as any;
+        if (d.apr > 0) {
+          map.set(symbol, { apr: d.apr, apyBase: d.apyBase || 0, apyReward: d.apyReward || 0, tvl: d.tvl || 0 });
+        }
+      }
+    }
+    if (map.size > 0) console.log(`[navi] Loaded ${map.size} Navi lending rates`);
+  } catch (e) {
+    console.error("[stakingRewards] Failed to read navi lending:", e);
+  }
+  naviCache = { data: map, ts: Date.now() };
+  return map;
+}
+
 let quotaCache: { data: Map<string, number>; ts: number } | null = null;
 
 export async function getBinanceQuotaFromFile(): Promise<Map<string, number>> {

@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getBinancePerps } from '@/lib/exchanges/binance';
 import { getBybitPerps } from '@/lib/exchanges/bybit';
+import { getOkxPerps } from '@/lib/exchanges/okx';
+import { getHyperliquidPerps } from '@/lib/exchanges/hyperliquid';
 import { getBatchMarketDataForSymbols } from '@/lib/marketData';
 
 // ISR: 每 120 秒后台自动重新验证
@@ -34,7 +36,7 @@ const getDateKey = (timestamp: number) => {
  */
 export interface PerpData {
   symbol: string; // 合约符号
-  exchange: 'Binance' | 'Bybit'; // 交易所
+  exchange: 'Binance' | 'Bybit' | 'OKX' | 'Hyperliquid'; // 交易所
   price: number; // 合约价格（优先使用标记价格）
   openInterest: number; // 未平仓量（张数）
   openInterestValue: number; // 未平仓名义价值（USDT）
@@ -74,9 +76,11 @@ export async function GET() {
     }
 
     // 并行获取各交易所数据（带超时保护，单个交易所超时不阻塞整体）
-    const [binanceData, bybitData] = await Promise.all([
+    const [binanceData, bybitData, okxData, hlData] = await Promise.all([
       withTimeout(getBinancePerps(), 25000, []),
       withTimeout(getBybitPerps(), 25000, []),
+      withTimeout(getOkxPerps(), 25000, []),
+      withTimeout(getHyperliquidPerps(), 10000, []),
     ]);
 
     // 合并数据并转换为统一格式
@@ -132,6 +136,55 @@ export async function GET() {
         fundingIntervalHours: item.fundingIntervalHours,
         hasFundingData: item.hasFundingData ?? true,
         hasOpenInterestData: item.hasOpenInterestData ?? true,
+      });
+    });
+
+
+    // 处理 OKX 数据
+    okxData.forEach(item => {
+      allSymbols.push(item.symbol);
+      const fundOiRatio = item.openInterestValue > 0
+        ? (item.insuranceFund / item.openInterestValue) * 100
+        : 0;
+
+      perpsMap.set(`${item.symbol}-OKX`, {
+        symbol: item.symbol,
+        exchange: 'OKX',
+        price: item.markPrice || item.lastPrice,
+        openInterest: item.openInterest,
+        openInterestValue: item.openInterestValue,
+        insuranceFund: item.insuranceFund,
+        fundOiRatio,
+        marketCap: null,
+        fdv: null,
+        volume24h: item.volume24h,
+        fundingRate: item.fundingRate,
+        nextFundingTime: item.nextFundingTime,
+        fundingIntervalHours: item.fundingIntervalHours,
+        hasFundingData: item.hasFundingData ?? true,
+        hasOpenInterestData: item.hasOpenInterestData ?? true,
+      });
+    });
+
+    // 处理 Hyperliquid 数据（仅 fundingRate，其他字段留空）
+    hlData.forEach(item => {
+      allSymbols.push(item.symbol);
+      perpsMap.set(`${item.symbol}-Hyperliquid`, {
+        symbol: item.symbol,
+        exchange: 'Hyperliquid',
+        price: 0,
+        openInterest: 0,
+        openInterestValue: 0,
+        insuranceFund: 0,
+        fundOiRatio: 0,
+        marketCap: null,
+        fdv: null,
+        volume24h: 0,
+        fundingRate: item.fundingRate,
+        nextFundingTime: item.nextFundingTime,
+        fundingIntervalHours: item.fundingIntervalHours,
+        hasFundingData: item.hasFundingData ?? true,
+        hasOpenInterestData: false,
       });
     });
 

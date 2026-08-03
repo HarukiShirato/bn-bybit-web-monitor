@@ -65,6 +65,29 @@ export async function GET(request: Request) {
           rate: parseFloat(item.fundingRate)
         })).reverse();
       }
+
+    } else if (exchange === 'OKX') {
+      // OKX API: GET /api/v5/public/funding-rate-history
+      // OKX uses instId format: BTC-USDT-SWAP
+      // Convert BTCUSDT -> BTC-USDT-SWAP
+      const base = symbol.replace(/USDT$/, '');
+      const instId = base + '-USDT-SWAP';
+      
+      const response = await axios.get('https://www.okx.com/api/v5/public/funding-rate-history', {
+        params: {
+          instId,
+          limit: 200,
+        },
+        timeout: 10000,
+      });
+
+      if (response.data?.data) {
+        // OKX returns data in reverse chronological order
+        historyData = response.data.data.map((item: any) => ({
+          time: parseInt(item.fundingTime || 0),
+          rate: parseFloat(item.realizedRate || item.fundingRate || 0),
+        })).reverse();
+      }
     }
 
     return NextResponse.json({ success: true, data: historyData, constituents });

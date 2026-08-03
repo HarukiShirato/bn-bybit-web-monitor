@@ -35,3 +35,17 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+
+# 一次性调研脚本（本地分析用，不属于线上服务）
+/sign_*.js
+/skr_*.js
+/suilend_*.js
+/scripts/_patch.js
+
+# 编辑前的手工备份
+*.bak
+
+# 采集器运行时缓存（每轮采集都重写，不进版本库）
+/data/arbitrage-data.json
+/data/options-cache.json
+/scripts/data/

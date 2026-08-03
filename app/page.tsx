@@ -8,8 +8,9 @@ import PerpTable, { PerpData } from '@/components/PerpTable';
 import TabNav, { TabKey } from '@/components/TabNav';
 import EarnTable, { CombinedEarnRow } from '@/components/EarnTable';
 import EarnFilterControls from '@/components/EarnFilterControls';
+import OptionsTable, { OptionRow } from '@/components/OptionsTable';
 
-const PERP_EXCHANGES = ['Binance', 'Bybit', 'Bitget', 'Gate', 'OKX'];
+const PERP_EXCHANGES = ['Binance', 'Bybit', 'Bitget', 'Gate', 'OKX', 'Hyperliquid'];
 const EARN_EXCHANGES = ['Binance', 'Bybit', 'OKX'];
 
 export default function Home() {
@@ -47,6 +48,17 @@ export default function Home() {
   const [earnSearchQuery, setEarnSearchQuery] = useState('');
   const [earnMinCombinedApr, setEarnMinCombinedApr] = useState(0);
   const [earnMinOi, setEarnMinOi] = useState(0);
+  const [earnMinFunding3d, setEarnMinFunding3d] = useState(0);
+  const [earnMinFunding7d, setEarnMinFunding7d] = useState(0);
+  const [earnMinFunding30d, setEarnMinFunding30d] = useState(0);
+  const [earnMinVol, setEarnMinVol] = useState(0);
+
+  // ========== 期权数据 ==========
+  const [optionsData, setOptionsData] = useState<OptionRow[]>([]);
+  const [optionsLoading, setOptionsLoading] = useState(false);
+  const [optionsError, setOptionsError] = useState<string | null>(null);
+  const [optionsLastUpdate, setOptionsLastUpdate] = useState<Date | null>(null);
+  const [optionsFetched, setOptionsFetched] = useState(false);
 
   // ========== 数据获取 ==========
   const fetchPerpData = useCallback(async () => {
@@ -92,6 +104,28 @@ export default function Home() {
     }
   }, []);
 
+  const fetchOptionsData = useCallback(async () => {
+    try {
+      setOptionsLoading(true);
+      setOptionsError(null);
+      const response = await fetch('/api/options');
+      const result = await response.json();
+
+      if (result.success) {
+        setOptionsData(result.data);
+        setOptionsLastUpdate(new Date());
+        setOptionsFetched(true);
+      } else {
+        setOptionsError(result.error || 'Failed to fetch options data');
+      }
+    } catch (err) {
+      setOptionsError('Network request failed');
+      console.error('Failed to fetch options data:', err);
+    } finally {
+      setOptionsLoading(false);
+    }
+  }, []);
+
   // 初始加载永续数据
   useEffect(() => {
     fetchPerpData();
@@ -103,6 +137,13 @@ export default function Home() {
       fetchEarnData();
     }
   }, [activeTab, earnFetched, earnLoading, fetchEarnData]);
+
+  // 切换到期权 tab 时懒加载
+  useEffect(() => {
+    if (activeTab === 'options' && !optionsFetched && !optionsLoading) {
+      fetchOptionsData();
+    }
+  }, [activeTab, optionsFetched, optionsLoading, fetchOptionsData]);
 
   // 永续合约：每小时第 1 分钟自动刷新（资金费率整点结算）
   useEffect(() => {
@@ -155,6 +196,14 @@ export default function Home() {
     };
   }, [activeTab, fetchEarnData]);
 
+  // 期权数据：每 30 秒自动刷新
+  useEffect(() => {
+    if (activeTab !== 'options') return;
+
+    const interval = setInterval(fetchOptionsData, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [activeTab, fetchOptionsData]);
+
   // ========== 永续过滤 ==========
   const filteredData = useMemo(() => {
     return data.filter(item => {
@@ -174,9 +223,7 @@ export default function Home() {
   const assetOiMap = useMemo(() => {
     const oiMap = new Map<string, number>();
     for (const item of data) {
-      // 从合约符号提取基础币种：BTCUSDT → BTC, 1000PEPEUSDT → PEPE
       let base = item.symbol.replace(/USDT$/, '');
-      // 处理 1000PEPE, 1000SATS, 1000RATS 等带倍数前缀的合约
       const multiplierMatch = base.match(/^(\d+)(.+)$/);
       if (multiplierMatch) {
         const prefix = parseInt(multiplierMatch[1]);
@@ -186,7 +233,6 @@ export default function Home() {
       }
       base = base.toUpperCase();
       const current = oiMap.get(base) || 0;
-      // 取所有交易所中该 asset 的最大 OI
       if (item.openInterestValue > current) {
         oiMap.set(base, item.openInterestValue);
       }
@@ -196,22 +242,68 @@ export default function Home() {
 
   // ========== 理财过滤 ==========
   const filteredEarnData = useMemo(() => {
-    return earnData.filter(item => {
-      // 交易所筛选：该 asset 至少有一个 earnRate 属于已选交易所
-      if (item.earnRates.length > 0) {
-        const hasSelectedExchange = item.earnRates.some(r => earnSelectedExchanges.has(r.exchange));
-        if (!hasSelectedExchange) return false;
+    const recomputeBest = (item: CombinedEarnRow): CombinedEarnRow => {
+      const earnCand = item.earnRates.filter(r => earnSelectedExchanges.has(r.exchange));
+      const fundCand = item.funding.filter(f => earnSelectedExchanges.has(f.exchange));
+
+      let bestEarnApr = 0, bestEarnExchange = '', bestEarn3d = 0, bestEarn7d = 0;
+      if (earnCand.length > 0) {
+        const top = earnCand.reduce((a, b) => (b.apr > a.apr ? b : a));
+        bestEarnApr = top.apr;
+        bestEarnExchange = top.exchange;
+        bestEarn3d = Math.max(...earnCand.map(c => c.apr3d ?? c.apr));
+        bestEarn7d = Math.max(...earnCand.map(c => c.apr7d ?? c.apr));
       }
-      if (earnSearchQuery && !item.asset.toLowerCase().includes(earnSearchQuery.toLowerCase())) return false;
-      if (earnMinCombinedApr > 0 && item.combined7d * 100 < earnMinCombinedApr) return false;
-      // OI 筛选：从永续数据中匹配该 asset 的 OI
-      if (earnMinOi > 0) {
-        const oi = assetOiMap.get(item.asset.toUpperCase()) || 0;
-        if (oi < earnMinOi) return false;
-      }
-      return true;
-    });
-  }, [earnData, earnSelectedExchanges, earnSearchQuery, earnMinCombinedApr, earnMinOi, assetOiMap]);
+
+      const pickFund = (key: 'apr3d' | 'apr7d' | 'apr30d') => {
+        if (fundCand.length === 0) return { value: 0, exchange: '' };
+        const top = fundCand.reduce((a, b) => (b[key] > a[key] ? b : a));
+        return { value: top[key], exchange: top.exchange };
+      };
+      const f3 = pickFund('apr3d');
+      const f7 = pickFund('apr7d');
+      const f30 = pickFund('apr30d');
+
+      return {
+        ...item,
+        bestEarnApr,
+        bestEarnExchange,
+        bestEarn3d,
+        bestEarn7d,
+        bestFunding3d: f3.value,
+        bestFunding7d: f7.value,
+        bestFunding30d: f30.value,
+        bestFundingExchange3d: f3.exchange,
+        bestFundingExchange7d: f7.exchange,
+        bestFundingExchange30d: f30.exchange,
+        combined3d: bestEarn3d + f3.value,
+        combined7d: bestEarn7d + f7.value,
+      };
+    };
+
+    return earnData
+      .filter(item => {
+        if (item.earnRates.length > 0) {
+          const hasSelectedExchange = item.earnRates.some(r => earnSelectedExchanges.has(r.exchange));
+          if (!hasSelectedExchange) return false;
+        }
+        if (earnSearchQuery && !item.asset.toLowerCase().includes(earnSearchQuery.toLowerCase())) return false;
+        if (earnMinOi > 0) {
+          const oi = assetOiMap.get(item.asset.toUpperCase()) || 0;
+          if (oi < earnMinOi) return false;
+        }
+        if (earnMinVol > 0 && (item.bestVolume ?? 0) < earnMinVol) return false;
+        return true;
+      })
+      .map(recomputeBest)
+      .filter(item => {
+        if (earnMinCombinedApr > 0 && item.bestEarnApr * 100 < earnMinCombinedApr) return false;
+        if (earnMinFunding3d !== 0 && item.bestFunding3d * 100 < earnMinFunding3d) return false;
+        if (earnMinFunding7d !== 0 && item.bestFunding7d * 100 < earnMinFunding7d) return false;
+        if (earnMinFunding30d !== 0 && item.bestFunding30d * 100 < earnMinFunding30d) return false;
+        return true;
+      });
+  }, [earnData, earnSelectedExchanges, earnSearchQuery, earnMinCombinedApr, earnMinOi, earnMinFunding3d, earnMinFunding7d, earnMinFunding30d, earnMinVol, assetOiMap]);
 
   // ========== 辅助 ==========
   const maxOi = useMemo(() => {
@@ -266,12 +358,13 @@ export default function Home() {
 
   const handleRefresh = () => {
     if (activeTab === 'perps') fetchPerpData();
-    else fetchEarnData();
+    else if (activeTab === 'earn') fetchEarnData();
+    else fetchOptionsData();
   };
 
-  const isLoading = activeTab === 'perps' ? loading : earnLoading;
-  const currentError = activeTab === 'perps' ? error : earnError;
-  const currentLastUpdate = activeTab === 'perps' ? lastUpdate : earnLastUpdate;
+  const isLoading = activeTab === 'perps' ? loading : activeTab === 'earn' ? earnLoading : optionsLoading;
+  const currentError = activeTab === 'perps' ? error : activeTab === 'earn' ? earnError : optionsError;
+  const currentLastUpdate = activeTab === 'perps' ? lastUpdate : activeTab === 'earn' ? earnLastUpdate : optionsLastUpdate;
 
   return (
     <div className="min-h-screen bg-brand-dark relative overflow-x-hidden selection:bg-brand-accent/30">
@@ -402,6 +495,14 @@ export default function Home() {
                   onMinCombinedAprChange={setEarnMinCombinedApr}
                   minOi={earnMinOi}
                   onMinOiChange={setEarnMinOi}
+                  minFunding3d={earnMinFunding3d}
+                  onMinFunding3dChange={setEarnMinFunding3d}
+                  minFunding7d={earnMinFunding7d}
+                  onMinFunding7dChange={setEarnMinFunding7d}
+                  minFunding30d={earnMinFunding30d}
+                  onMinFunding30dChange={setEarnMinFunding30d}
+                  minVol={earnMinVol}
+                  onMinVolChange={setEarnMinVol}
                 />
                 <div className="flex-1" />
                 <div className="text-sm text-brand-text-secondary font-medium px-4 py-1.5 bg-brand-dark/50 rounded-md border border-brand-border/50">
@@ -426,6 +527,29 @@ export default function Home() {
               </div>
             ) : (
               <EarnTable data={filteredEarnData} />
+            )}
+          </>
+        )}
+
+        {/* ========== 期权 Tab ========== */}
+        {activeTab === 'options' && (
+          <>
+            {optionsError && (
+              <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 flex items-center gap-3">
+                <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                {optionsError}
+              </div>
+            )}
+
+            {optionsLoading && optionsData.length === 0 ? (
+              <div className="text-center py-24 text-brand-text-secondary">
+                 <div className="animate-spin w-8 h-8 border-2 border-brand-accent border-t-transparent rounded-full mx-auto mb-4"></div>
+                 Loading Deribit options data...
+              </div>
+            ) : (
+              <OptionsTable data={optionsData} />
             )}
           </>
         )}

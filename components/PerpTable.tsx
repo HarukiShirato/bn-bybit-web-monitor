@@ -2,10 +2,11 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
+import { Cell } from 'recharts';
 
 export interface PerpData {
   symbol: string;
-  exchange: 'Binance' | 'Bybit';
+  exchange: 'Binance' | 'Bybit' | 'OKX';
   price: number;
   openInterest: number;
   openInterestValue: number;
@@ -38,7 +39,6 @@ const XAxis = dynamic(() => import('recharts').then(mod => mod.XAxis), { ssr: fa
 const YAxis = dynamic(() => import('recharts').then(mod => mod.YAxis), { ssr: false });
 const Tooltip = dynamic(() => import('recharts').then(mod => mod.Tooltip), { ssr: false });
 const ReferenceLine = dynamic(() => import('recharts').then(mod => mod.ReferenceLine), { ssr: false });
-const Cell = dynamic(() => import('recharts').then(mod => mod.Cell), { ssr: false });
 
 const Countdown = ({ targetTime }: { targetTime: number }) => {
   const [timeLeft, setTimeLeft] = useState('');
@@ -344,6 +344,8 @@ export default function PerpTable({ data }: PerpTableProps) {
                           inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border
                           ${item.exchange === 'Binance' 
                             ? 'bg-[#FCD535]/10 text-[#FCD535] border-[#FCD535]/20' 
+                            : item.exchange === 'OKX'
+                            ? 'bg-[#FFFFFF]/10 text-[#FFFFFF] border-[#FFFFFF]/20'
                             : 'bg-brand-info/10 text-brand-info border-brand-info/20'}
                         `}>
                           {item.exchange}
@@ -386,9 +388,9 @@ export default function PerpTable({ data }: PerpTableProps) {
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-right font-mono text-sm pr-6">
                       <div className="flex items-center justify-end gap-2">
-                          <div className="w-12 h-1 bg-brand-surface rounded-full overflow-hidden hidden lg:block">
-                            <div 
-                                className={`h-full rounded-full ${item.fundOiRatio > 20 ? 'bg-brand-success' : 'bg-brand-text-secondary'}`} 
+                          <div className="w-16 h-2 bg-brand-surfaceHighlight rounded-full overflow-hidden hidden lg:block ring-1 ring-brand-border/60">
+                            <div
+                                className={`h-full rounded-full ${item.fundOiRatio > 50 ? 'bg-brand-success' : item.fundOiRatio > 20 ? 'bg-brand-accent' : 'bg-brand-info'}`}
                                 style={{ width: `${Math.min(item.fundOiRatio, 100)}%` }}
                             />
                           </div>
@@ -423,12 +425,12 @@ export default function PerpTable({ data }: PerpTableProps) {
                                     />
                                     <Tooltip content={<FundingTooltip intervalHours={item.fundingIntervalHours || 8} />} cursor={{ fill: 'rgba(255,255,255,0.05)' }} />
                                     <ReferenceLine y={0} stroke="#2B3139" strokeDasharray="3 3" />
-                                    <Bar dataKey="rate" maxBarSize={6}>
+                                    <Bar dataKey="rate" maxBarSize={10}>
                                       {historyData.map((entry, index) => (
                                         <Cell
                                           key={`cell-${index}`}
-                                          fill="#FFFFFF"
-                                          fillOpacity={0.7}
+                                          fill={entry.rate >= 0 ? '#0ECB81' : '#F6465D'}
+                                          fillOpacity={0.9}
                                         />
                                       ))}
                                     </Bar>

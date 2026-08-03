@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getBinanceEarnProducts } from '@/lib/exchanges/binanceEarn';
+import { getBinanceEarnProductsFromFile } from "@/lib/exchanges/binanceEarn";
 import { getBybitEarnProducts } from '@/lib/exchanges/bybitEarn';
 import { getOkxEarnProducts } from '@/lib/exchanges/okxEarn';
 // Market cap now from file (Binance products, collected every 8h)
-import { batchGetFundingStats, getOpenInterestMap, ExchangeOI } from '@/lib/fundingAggregator';
+import { batchGetFundingStats, getOpenInterestMap, ExchangeOI, getVolumeMap, ExchangeVolume } from '@/lib/fundingAggregator';
 import { getOkxRealEarnRates } from '@/lib/okxRealEarn';
-import { getStakingRewardsMap, getStakingInfoMap, getMarketCapsFromFile, getBinanceQuotaFromFile } from "@/lib/stakingRewards";
+import { getStakingRewardsMap, getStakingInfoMap, getMarketCapsFromFile, getBinanceQuotaFromFile, getNaviLendingRates } from "@/lib/stakingRewards";
 import { getArbitrageMap, ArbitrageInfo } from "@/lib/arbitrageData";
 
 // 跳过构建时预渲染，由进程级缓存 + funding 缓存 控制刷新
@@ -24,6 +24,7 @@ export interface FundingRate {
   exchange: string;
   apr3d: number;
   apr7d: number;
+  apr30d: number;
 }
 
 export interface CombinedEarnRow {
@@ -36,8 +37,10 @@ export interface CombinedEarnRow {
   funding: FundingRate[];
   bestFunding3d: number;
   bestFunding7d: number;
+  bestFunding30d: number;
   bestFundingExchange3d: string;
   bestFundingExchange7d: string;
+  bestFundingExchange30d: string;
   combined3d: number;
   combined7d: number;
   coinImage?: string;
@@ -45,6 +48,12 @@ export interface CombinedEarnRow {
   binanceOI: number | null;
   bybitOI: number | null;
   hyperliquidOI: number | null;
+  okxOI: number | null;
+  binanceVol: number | null;
+  bybitVol: number | null;
+  hyperliquidVol: number | null;
+  okxVol: number | null;
+  bestVolume: number | null;
   marketCap: number | null;
   stakingApr: number | null;
   stakingUnstakingDays: number | null;
@@ -72,7 +81,7 @@ export async function GET() {
     }
 
     const [binanceProducts, bybitProducts, okxProducts] = await Promise.all([
-      withTimeout(getBinanceEarnProducts(), 25000, []),
+      withTimeout(getBinanceEarnProductsFromFile(), 5000, []),
       withTimeout(getBybitEarnProducts(), 25000, []),
       withTimeout(getOkxEarnProducts(), 25000, []),
     ]);
@@ -106,6 +115,12 @@ export async function GET() {
     for (const p of bybitProducts) addEarn(p.asset, 'Bybit', p.apr);
     for (const p of okxProducts) addEarn(p.asset, 'OKX', p.apr);
 
+    // Navi Lending (DeFiLlama) - Sui 链借贷收益率
+    const naviRates = await withTimeout(getNaviLendingRates(), 10000, new Map());
+    for (const [symbol, data] of naviRates) {
+      addEarn(symbol, 'Navi', data.apr);
+    }
+
     // 有原生质押但没有交易所 earn 的代币也加入列表（确保它们能显示）
     const earlyStakingMap = await withTimeout(getStakingRewardsMap(), 10000, new Map());
     for (const [asset] of earlyStakingMap) {
@@ -118,9 +133,10 @@ export async function GET() {
     const symbols = allAssets.map(a => a + 'USDT');
 
     // 并行获取：资金费率 + OI + 市值数据 + OKX 真实收益率
-    const [fundingMap, oiMap, marketDataMap, okxRealMap, stakingMap, stakingInfoMap, arbitrageMap, binanceQuotaMap] = await Promise.all([
+    const [fundingMap, oiMap, volMap, marketDataMap, okxRealMap, stakingMap, stakingInfoMap, arbitrageMap, binanceQuotaMap] = await Promise.all([
       withTimeout(batchGetFundingStats(allAssets), 55000, new Map()),
       withTimeout(getOpenInterestMap(allAssets), 55000, new Map()),
+      withTimeout(getVolumeMap(allAssets), 55000, new Map()),
       withTimeout(getMarketCapsFromFile(), 10000, new Map()),
       withTimeout(getOkxRealEarnRates(), 15000, new Map()),
       withTimeout(getStakingRewardsMap(), 10000, new Map()),
@@ -154,23 +170,28 @@ export async function GET() {
       const funding: FundingRate[] = [];
       if (fs) {
         if (fs.binance3d != null || fs.binance7d != null) {
-          funding.push({ exchange: 'Binance', apr3d: fs.binance3d ?? 0, apr7d: fs.binance7d ?? 0 });
+          funding.push({ exchange: 'Binance', apr3d: fs.binance3d ?? 0, apr7d: fs.binance7d ?? 0, apr30d: fs.binance30d ?? 0 });
         }
         if (fs.bybit3d != null || fs.bybit7d != null) {
-          funding.push({ exchange: 'Bybit', apr3d: fs.bybit3d ?? 0, apr7d: fs.bybit7d ?? 0 });
+          funding.push({ exchange: 'Bybit', apr3d: fs.bybit3d ?? 0, apr7d: fs.bybit7d ?? 0, apr30d: fs.bybit30d ?? 0 });
         }
         if (fs.hyperliquid3d != null || fs.hyperliquid7d != null) {
-          funding.push({ exchange: 'Hyperliquid', apr3d: fs.hyperliquid3d ?? 0, apr7d: fs.hyperliquid7d ?? 0 });
+          funding.push({ exchange: 'Hyperliquid', apr3d: fs.hyperliquid3d ?? 0, apr7d: fs.hyperliquid7d ?? 0, apr30d: fs.hyperliquid30d ?? 0 });
+        }
+        if (fs.okx3d != null || fs.okx7d != null) {
+          funding.push({ exchange: 'OKX', apr3d: fs.okx3d ?? 0, apr7d: fs.okx7d ?? 0, apr30d: fs.okx30d ?? 0 });
         }
       }
 
-      let bestFunding3d = 0, bestFunding7d = 0;
-      let bestFundingExchange3d = '', bestFundingExchange7d = '';
+      let bestFunding3d = 0, bestFunding7d = 0, bestFunding30d = 0;
+      let bestFundingExchange3d = '', bestFundingExchange7d = '', bestFundingExchange30d = '';
       if (funding.length > 0) {
         bestFunding3d = funding[0].apr3d;
         bestFundingExchange3d = funding[0].exchange;
         bestFunding7d = funding[0].apr7d;
         bestFundingExchange7d = funding[0].exchange;
+        bestFunding30d = funding[0].apr30d;
+        bestFundingExchange30d = funding[0].exchange;
         for (let i = 1; i < funding.length; i++) {
           if (funding[i].apr3d > bestFunding3d) {
             bestFunding3d = funding[i].apr3d;
@@ -179,6 +200,10 @@ export async function GET() {
           if (funding[i].apr7d > bestFunding7d) {
             bestFunding7d = funding[i].apr7d;
             bestFundingExchange7d = funding[i].exchange;
+          }
+          if (funding[i].apr30d > bestFunding30d) {
+            bestFunding30d = funding[i].apr30d;
+            bestFundingExchange30d = funding[i].exchange;
           }
         }
       }
@@ -206,8 +231,10 @@ export async function GET() {
         funding,
         bestFunding3d,
         bestFunding7d,
+        bestFunding30d,
         bestFundingExchange3d,
         bestFundingExchange7d,
+        bestFundingExchange30d,
         combined3d: Math.max(bestEarn3d, stakingMap.get(asset) ?? 0, arbitrageMap.get(asset)?.apr ?? 0) + bestFunding3d,
         combined7d: Math.max(bestEarn7d, stakingMap.get(asset) ?? 0, arbitrageMap.get(asset)?.apr ?? 0) + bestFunding7d,
         coinImage: undefined,
@@ -215,6 +242,17 @@ export async function GET() {
         binanceOI: oiMap.get(asset)?.binance ?? null,
         bybitOI: oiMap.get(asset)?.bybit ?? null,
         hyperliquidOI: oiMap.get(asset)?.hyperliquid ?? null,
+        okxOI: oiMap.get(asset)?.okx ?? null,
+        binanceVol: volMap.get(asset)?.binance ?? null,
+        bybitVol: volMap.get(asset)?.bybit ?? null,
+        hyperliquidVol: volMap.get(asset)?.hyperliquid ?? null,
+        okxVol: volMap.get(asset)?.okx ?? null,
+        bestVolume: Math.max(
+          volMap.get(asset)?.binance ?? 0,
+          volMap.get(asset)?.bybit ?? 0,
+          volMap.get(asset)?.hyperliquid ?? 0,
+          volMap.get(asset)?.okx ?? 0
+        ) || null,
         stakingApr: stakingMap.get(asset) ?? null,
         stakingUnstakingDays: stakingInfoMap.get(asset)?.unstakingDays ?? null,
         arbitrage: arbitrageMap.get(asset) ?? null,

@@ -360,6 +360,33 @@ async function fetchSkrStaking() {
   return null;
 }
 
+async function fetchNaviLendingRates() {
+  try {
+    const res = await axios.get("https://yields.llama.fi/pools", { timeout: 30000 });
+    const pools = res.data?.data || [];
+    // Filter Navi Lending single-asset pools on Sui chain
+    const naviPools = pools.filter(p => p.project === "navi-lending" && p.chain === "Sui" && !p.symbol.includes("-"));
+    const result = {};
+    for (const p of naviPools) {
+      const symbol = p.symbol.toUpperCase();
+      if (p.apy > 0) {
+        result[symbol] = {
+          apr: p.apy / 100,
+          apyBase: (p.apyBase || 0) / 100,
+          apyReward: (p.apyReward || 0) / 100,
+          tvl: p.tvlUsd || 0,
+        };
+      }
+    }
+    const symbols = Object.keys(result);
+    console.log(`[staking] Navi Lending: ${symbols.length} assets (${symbols.slice(0, 8).join(", ")})`);
+    return result;
+  } catch (e) {
+    console.error("[staking] Navi Lending fetch failed: " + e.message);
+  }
+  return {};
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 
@@ -468,6 +495,37 @@ async function fetchBinanceOI() {
 }
 
 
+// fetchBinanceEarnProducts - collect Binance earn product list with APR
+async function fetchBinanceEarnProducts() {
+  const result = [];
+  if (!process.env.BINANCE_API_KEY || !process.env.BINANCE_API_SECRET) return result;
+  const KEY = process.env.BINANCE_API_KEY;
+  const SECRET = process.env.BINANCE_API_SECRET;
+  const sign = (qs) => require("crypto").createHmac("sha256", SECRET).update(qs).digest("hex");
+  try {
+    let page = 1;
+    while (true) {
+      const ts = Date.now();
+      const qs = "current=" + page + "&size=100&timestamp=" + ts;
+      const res = await axios.get("https://api.binance.com/sapi/v1/simple-earn/flexible/list?" + qs + "&signature=" + sign(qs),
+        { headers: { "X-MBX-APIKEY": KEY }, timeout: 15000 });
+      const rows = res.data.rows || [];
+      if (rows.length === 0) break;
+      for (const r of rows) {
+        const apr = parseFloat(r.latestAnnualPercentageRate || "0");
+        if (apr > 0) {
+          result.push({ asset: r.asset, apr, canPurchase: r.canPurchase !== false, productId: r.productId });
+        }
+      }
+      if (page * 100 >= (res.data.total || 0)) break;
+      page++;
+      await sleep(300);
+    }
+    console.log("[staking] Binance earn products: " + result.length);
+  } catch (e) { console.error("[staking] Binance earn fetch failed: " + e.message); }
+  return result;
+}
+
 async function fetchBinanceQuota() {
   const result = {};
   if (!process.env.BINANCE_API_KEY || !process.env.BINANCE_API_SECRET) return result;
@@ -475,6 +533,7 @@ async function fetchBinanceQuota() {
   const SECRET = process.env.BINANCE_API_SECRET;
   const sign = (qs) => require("crypto").createHmac("sha256", SECRET).update(qs).digest("hex");
   try {
+    // 1. Get all product IDs
     const products = [];
     let page = 1;
     while (true) {
@@ -490,6 +549,28 @@ async function fetchBinanceQuota() {
       await sleep(300);
     }
     console.log("[staking] Binance products: " + products.length);
+
+    // 2. Get all current positions (to add back to leftQuota for total limit)
+    const posMap = {};
+    let posPage = 1;
+    while (true) {
+      const ts = Date.now();
+      const qs = "current=" + posPage + "&size=100&timestamp=" + ts;
+      const res = await axios.get("https://api.binance.com/sapi/v1/simple-earn/flexible/position?" + qs + "&signature=" + sign(qs),
+        { headers: { "X-MBX-APIKEY": KEY }, timeout: 15000 });
+      const rows = res.data.rows || [];
+      if (rows.length === 0) break;
+      for (const r of rows) {
+        const amt = parseFloat(r.totalAmount || "0");
+        if (amt > 0) posMap[r.asset] = (posMap[r.asset] || 0) + amt;
+      }
+      if (posPage * 100 >= (res.data.total || 0)) break;
+      posPage++;
+      await sleep(300);
+    }
+    console.log("[staking] Binance positions: " + Object.keys(posMap).length + " assets held");
+
+    // 3. Fetch leftQuota in batches, add position for total limit
     let ok = 0;
     for (let i = 0; i < products.length; i += 5) {
       const batch = products.slice(i, i + 5);
@@ -499,8 +580,10 @@ async function fetchBinanceQuota() {
           const qs = "productId=" + p.id + "&timestamp=" + ts;
           const res = await axios.get("https://api.binance.com/sapi/v1/simple-earn/flexible/personalLeftQuota?" + qs + "&signature=" + sign(qs),
             { headers: { "X-MBX-APIKEY": KEY }, timeout: 5000 });
-          const quota = parseFloat(res.data.leftPersonalQuota || "0");
-          if (quota > 0) { result[p.asset] = quota; ok++; }
+          const leftQuota = parseFloat(res.data.leftPersonalQuota || "0");
+          const held = posMap[p.asset] || 0;
+          const totalLimit = leftQuota + held;
+          if (totalLimit > 0) { result[p.asset] = totalLimit; ok++; }
         } catch {}
       }));
       if (i + 5 < products.length) await sleep(300);
@@ -545,6 +628,12 @@ async function collect() {
   }
   }
 
+  // Fetch Navi Lending rates (DeFiLlama)
+  const naviRates = await fetchNaviLendingRates();
+  if (Object.keys(naviRates).length > 0) {
+    existing.naviLending = { rates: naviRates, updatedAt: Date.now() };
+  }
+
   // Fetch Market Caps
   const marketCaps = await fetchMarketCaps();
   const mcapsWithFallback = await fetchMcapFallback(marketCaps);
@@ -558,6 +647,9 @@ async function collect() {
     existing.binanceOI = binanceOI;
   }
 
+
+  const binanceEarnProducts = await fetchBinanceEarnProducts();
+  if (binanceEarnProducts.length > 0) existing.binanceEarnProducts = binanceEarnProducts;
 
   const binanceQuota = await fetchBinanceQuota();
   if (Object.keys(binanceQuota).length > 0) existing.binanceQuota = binanceQuota;
@@ -576,9 +668,9 @@ collect().then(() => {
   console.log("[staking] Initial collection done");
 });
 
-// Then every 8 hours
+// Then every 2 hours
 setInterval(() => {
   collect().catch(e => console.error("[staking] Collection error:", e.message));
-}, 8 * 60 * 60 * 1000);
+}, 2 * 60 * 60 * 1000);
 
-console.log("[staking] Collector started, interval: 8 hours");
+console.log("[staking] Collector started, interval: 2 hours");
