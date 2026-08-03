@@ -71,6 +71,7 @@ function FundingLine({
   intervalHours: number;
 }) {
   const [hover, setHover] = useState<number | null>(null);
+  const [pinned, setPinned] = useState<number | null>(null); // 点击钉住，移开鼠标也不消失
 
   const W = 800;
   const H = 140;
@@ -106,15 +107,24 @@ function FundingLine({
     return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
 
-  const onMove = (e: ReactMouseEvent<HTMLDivElement>) => {
+  const idxFromEvent = (e: ReactMouseEvent<HTMLDivElement>): number | null => {
     const rect = e.currentTarget.getBoundingClientRect();
-    if (rect.width <= 0) return;
+    if (rect.width <= 0) return null;
     const rel = (e.clientX - rect.left) / rect.width;
-    setHover(Math.min(history.length - 1, Math.max(0, Math.round(rel * (history.length - 1)))));
+    return Math.min(history.length - 1, Math.max(0, Math.round(rel * (history.length - 1))));
   };
 
-  const hovered = hover === null ? null : history[hover];
-  const hoveredRate = hover === null ? 0 : rates[hover];
+  const onMove = (e: ReactMouseEvent<HTMLDivElement>) => setHover(idxFromEvent(e));
+
+  const onClick = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const i = idxFromEvent(e);
+    setPinned(prev => (prev !== null && prev === i ? null : i));
+  };
+
+  // 钉住优先，其次才是当前悬停
+  const active = pinned !== null ? pinned : hover;
+  const hovered = active === null ? null : history[active];
+  const hoveredRate = active === null ? 0 : rates[active];
 
   return (
     <div className="mt-3 pt-2 border-t border-brand-border">
@@ -133,7 +143,7 @@ function FundingLine({
               </span>
             </>
           ) : (
-            <span>hover for reading</span>
+            <span>hover to read · click to pin</span>
           )}
         </span>
       </div>
@@ -156,10 +166,11 @@ function FundingLine({
         </div>
 
         <div
-          className="relative flex-1 select-none"
+          className="relative flex-1 select-none cursor-crosshair"
           style={{ height: H }}
           onMouseMove={onMove}
           onMouseLeave={() => setHover(null)}
+          onClick={onClick}
         >
           <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
             {/* 横向网格 */}
@@ -194,18 +205,18 @@ function FundingLine({
               strokeWidth={1}
               vectorEffect="non-scaling-stroke"
             />
-            {hover !== null && (
+            {active !== null && (
               <>
                 <line
-                  x1={xAt(hover)}
-                  x2={xAt(hover)}
+                  x1={xAt(active)}
+                  x2={xAt(active)}
                   y1={0}
                   y2={H}
                   stroke="var(--chart-cross)"
                   vectorEffect="non-scaling-stroke"
                 />
                 <circle
-                  cx={xAt(hover)}
+                  cx={xAt(active)}
                   cy={yAt(hoveredRate)}
                   r={2.5}
                   fill={hoveredRate >= 0 ? 'var(--chart-pos)' : 'var(--chart-neg)'}
@@ -214,6 +225,32 @@ function FundingLine({
               </>
             )}
           </svg>
+
+          {/* 光标处的读数：时间 + 单期费率 + 年化 */}
+          {active !== null && hovered && (() => {
+            const xPct = (active / (history.length - 1)) * 100;
+            const yPct = (yAt(hoveredRate) / H) * 100;
+            const flip = xPct > 62;
+            return (
+              <div
+                className="absolute z-10 pointer-events-none whitespace-nowrap border border-brand-border bg-brand-surface px-2 py-1 text-[10px] leading-4"
+                style={{
+                  left: `${xPct}%`,
+                  top: `${yPct}%`,
+                  transform: `translate(${flip ? '-100%' : '0'}, -115%) translateX(${flip ? '-6px' : '6px'})`,
+                }}
+              >
+                <div className="text-brand-text-secondary">{fmtTs(hovered.time)}</div>
+                <div className={hoveredRate >= 0 ? 'text-brand-success' : 'text-brand-danger'}>
+                  {(hoveredRate >= 0 ? '+' : '') + hoveredRate.toFixed(4)}%
+                  <span className="text-brand-text-muted"> · apr </span>
+                  {(hoveredRate >= 0 ? '+' : '') + (hoveredRate * cycles * 365).toFixed(2)}%
+                </div>
+                {pinned !== null && <div className="text-brand-text-muted">pinned · click to release</div>}
+              </div>
+            );
+          })()}
+
           <div className="absolute left-0 right-0 bottom-0 h-px bg-brand-border" />
         </div>
       </div>
