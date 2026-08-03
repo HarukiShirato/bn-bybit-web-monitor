@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -50,7 +52,7 @@ export async function GET(request: Request) {
     if (exchange === 'Binance') {
       // Binance API: GET /fapi/v1/fundingRate
       // Returns latest funding rate history
-      const response = await axios.get('https://fapi.binance.com/fapi/v1/fundingRate', {
+      const response = await axios.get('https://www.binance.com/fapi/v1/fundingRate', {
         params: {
           symbol: symbol,
           limit: 200 // 7d × 24h/1h = 168, 需要至少 168 条
@@ -63,7 +65,7 @@ export async function GET(request: Request) {
       }));
 
       try {
-        const constituentsRes = await axios.get('https://fapi.binance.com/fapi/v1/constituents', {
+        const constituentsRes = await axios.get('https://www.binance.com/fapi/v1/constituents', {
           params: { symbol }
         });
         if (constituentsRes.data?.constituents) {
@@ -137,6 +139,23 @@ export async function GET(request: Request) {
         time: item.time,
         rate: parseFloat(item.fundingRate || '0'),
       }));
+
+    } else if (exchange === 'Aster') {
+      // Aster 没有公开的历史资金费接口，用采集器落盘的数据
+      try {
+        const file = path.join(process.cwd(), 'data', 'funding-history.json');
+        const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+        const entry = raw?.aster?.[symbol];
+        const rates = Array.isArray(entry) ? entry : entry?.rates;
+        if (Array.isArray(rates)) {
+          historyData = rates
+            .map((r: any) => ({ time: r.time, rate: r.rate }))
+            .sort((a: any, b: any) => a.time - b.time)
+            .slice(-200);
+        }
+      } catch (e: any) {
+        console.error('[funding-history] Aster read failed:', e.message);
+      }
     }
 
     return NextResponse.json({ success: true, data: historyData, constituents });

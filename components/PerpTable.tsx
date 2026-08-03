@@ -1,8 +1,6 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
-import dynamic from 'next/dynamic';
-import { Cell } from 'recharts';
 
 export interface PerpData {
   symbol: string;
@@ -31,14 +29,122 @@ interface PerpTableProps {
   data: PerpData[];
 }
 
-// 按需加载图表组件，避免首屏加载 Recharts 体积
-const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
-const BarChart = dynamic(() => import('recharts').then(mod => mod.BarChart), { ssr: false });
-const Bar = dynamic(() => import('recharts').then(mod => mod.Bar), { ssr: false });
-const XAxis = dynamic(() => import('recharts').then(mod => mod.XAxis), { ssr: false });
-const YAxis = dynamic(() => import('recharts').then(mod => mod.YAxis), { ssr: false });
-const Tooltip = dynamic(() => import('recharts').then(mod => mod.Tooltip), { ssr: false });
-const ReferenceLine = dynamic(() => import('recharts').then(mod => mod.ReferenceLine), { ssr: false });
+/* ── 时点资金费网格 ──
+   等宽字体下按结算时点横向铺开：上行时刻、下行费率，正绿负红。
+   末尾给出按可用历史算出的年化，覆盖不足的窗口显示 —。 */
+interface FundingPoint { time: number; rate: number }
+
+function FundingGrid({
+  symbol,
+  exchange,
+  intervalHours,
+  history,
+  constituents,
+}: {
+  symbol: string;
+  exchange: string;
+  intervalHours: number;
+  history: FundingPoint[];
+  constituents: any[];
+}) {
+  const POINTS = 24; // 展示最近 24 个结算时点
+
+  const sorted = [...history].sort((a, b) => a.time - b.time);
+  const recent = sorted.slice(-POINTS);
+  const cycles = intervalHours > 0 ? 24 / intervalHours : 3;
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const hhmm = (ts: number) => {
+    const d = new Date(ts);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const mmdd = (ts: number) => {
+    const d = new Date(ts);
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  // 覆盖不足的窗口不给数，避免用 8 天数据冒充 30 天年化
+  const aprOver = (days: number): number | null => {
+    const cutoff = Date.now() - days * 86400000;
+    if (!sorted.length || sorted[0].time > cutoff) return null;
+    const pts = sorted.filter(p => p.time >= cutoff);
+    if (!pts.length) return null;
+    const avg = pts.reduce((s, p) => s + p.rate, 0) / pts.length;
+    return avg * cycles * 365 * 100;
+  };
+
+  const sumOver = (hours: number): number | null => {
+    const cutoff = Date.now() - hours * 3600000;
+    if (!sorted.length || sorted[0].time > cutoff) return null;
+    return sorted.filter(p => p.time >= cutoff).reduce((s, p) => s + p.rate, 0) * 100;
+  };
+
+  const tone = (v: number) => (v >= 0 ? 'text-brand-success' : 'text-brand-danger');
+  const signed = (v: number, digits: number) => (v >= 0 ? '+' : '') + v.toFixed(digits);
+
+  const Stat = ({ label, value, digits = 2, suffix = '%' }: { label: string; value: number | null; digits?: number; suffix?: string }) => (
+    <span className="whitespace-nowrap">
+      <span className="text-brand-text-muted">{label} </span>
+      {value === null
+        ? <span className="text-brand-text-muted">—</span>
+        : <span className={tone(value)}>{signed(value, digits)}{suffix}</span>}
+    </span>
+  );
+
+  return (
+    <div className="font-mono text-[11px]">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3 text-brand-text-muted">
+        <span className="text-brand-text-primary">{symbol}</span>
+        <span>{exchange}</span>
+        <span>{intervalHours}h settle</span>
+        <span>{sorted.length} pts</span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <div className="inline-flex gap-px border border-brand-border">
+          {recent.map((p, i) => {
+            const prev = recent[i - 1];
+            const newDay = !prev || mmdd(prev.time) !== mmdd(p.time);
+            return (
+              <div key={p.time} className="px-2 py-1.5 text-center bg-brand-dark min-w-[68px]">
+                <div className="text-brand-text-muted text-[10px] leading-4">
+                  {newDay ? mmdd(p.time) : ' '}
+                </div>
+                <div className="text-brand-text-secondary text-[10px] leading-4">{hhmm(p.time)}</div>
+                <div className={`leading-4 ${tone(p.rate)}`}>{signed(p.rate * 100, 4)}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 mt-3 pt-2 border-t border-brand-border">
+        <Stat label="24h" value={sumOver(24)} digits={4} />
+        <Stat label="7d" value={sumOver(7 * 24)} digits={4} />
+        <span className="text-brand-border">|</span>
+        <span className="text-brand-text-muted">apr</span>
+        <Stat label="3d" value={aprOver(3)} />
+        <Stat label="7d" value={aprOver(7)} />
+        <Stat label="30d" value={aprOver(30)} />
+      </div>
+
+      {constituents.length > 0 && (
+        <div className="mt-3 pt-2 border-t border-brand-border">
+          <div className="text-brand-text-muted mb-1">index constituents</div>
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+            {constituents.map((c, i) => (
+              <span key={`${c.exchange}-${c.symbol}-${i}`} className="whitespace-nowrap">
+                <span className="text-brand-text-secondary">{c.exchange}</span>
+                <span className="text-brand-text-muted"> {Number(c.price).toFixed(2)} </span>
+                <span className="text-brand-text-muted">{(Number(c.weight) * 100).toFixed(1)}%</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const Countdown = ({ targetTime }: { targetTime: number }) => {
   const [timeLeft, setTimeLeft] = useState('');
@@ -71,49 +177,6 @@ const Countdown = ({ targetTime }: { targetTime: number }) => {
   }, [targetTime]);
 
   return <span>{timeLeft}</span>;
-};
-
-// 格式化日期
-const formatDate = (timestamp: number) => {
-  const date = new Date(timestamp);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:00`;
-};
-
-interface FundingTooltipProps {
-  active?: boolean;
-  payload?: any[];
-  label?: number;
-  intervalHours: number;
-}
-
-const FundingTooltip = ({ active, payload, label, intervalHours }: FundingTooltipProps) => {
-  if (active && payload && payload.length) {
-    const rate = payload[0].value || 0;
-    const hours = intervalHours || 8;
-    const cyclesPerDay = hours > 0 ? 24 / hours : 3;
-    const apr = rate * cyclesPerDay * 365 * 100;
-    
-    return (
-      <div className="bg-brand-surface border border-brand-border p-3 rounded shadow-lg text-xs z-50 relative">
-        <p className="text-brand-text-primary font-bold mb-2 text-sm">{formatDate(label || 0)}</p>
-        <div className="space-y-1">
-          <p className="flex justify-between gap-4">
-            <span className="text-brand-text-secondary">Funding:</span>
-            <span className={`font-mono ${rate >= 0 ? 'text-brand-success' : 'text-brand-danger'}`}>
-              {(rate * 100).toFixed(4)}%
-            </span>
-          </p>
-          <p className="flex justify-between gap-4">
-            <span className="text-brand-text-secondary">APR ({hours}H):</span>
-            <span className={`font-mono ${apr >= 0 ? 'text-brand-success' : 'text-brand-danger'}`}>
-              {apr.toFixed(2)}%
-            </span>
-          </p>
-        </div>
-      </div>
-    );
-  }
-  return null;
 };
 
 export default function PerpTable({ data }: PerpTableProps) {
@@ -158,7 +221,9 @@ export default function PerpTable({ data }: PerpTableProps) {
     setConstituents([]);
 
     try {
-      const response = await fetch(`/api/funding-history?symbol=${symbol}&exchange=${exchange}`);
+      const response = await fetch(
+        `/api/funding-history?symbol=${encodeURIComponent(symbol)}&exchange=${encodeURIComponent(exchange)}`
+      );
       const result = await response.json();
       
       if (result.success) {
@@ -332,7 +397,11 @@ export default function PerpTable({ data }: PerpTableProps) {
                         )}
                       </div>
                     </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-secondary font-mono">
+                      <td
+                        className="px-4 py-3 whitespace-nowrap text-sm text-brand-text-secondary font-mono cursor-pointer hover:text-brand-text-primary"
+                        onClick={() => handleFundingClick(item.symbol, item.exchange)}
+                        title="show funding by settlement time"
+                      >
                         <div className="flex items-center gap-2">
                           <span>{displaySymbol}</span>
                           {isPartial && (
@@ -405,100 +474,23 @@ export default function PerpTable({ data }: PerpTableProps) {
                       </td>
                     </tr>
                     
-                    {/* Expanded Funding History Chart */}
+                    {/* 展开：时点资金费网格 */}
                     {isExpanded && (
-                      <tr className="bg-brand-surfaceHighlight/10 border-b border-brand-border">
+                      <tr className="border-b border-brand-border">
                         <td colSpan={12} className="px-6 py-4">
-                          <div className="flex flex-col lg:flex-row gap-6">
-                            <div className="flex-1 h-[180px]">
-                              {loadingHistory ? (
-                                <div className="h-full flex items-center justify-center text-brand-text-secondary text-sm">
-                                  <div className="animate-spin w-4 h-4 border-2 border-brand-accent border-t-transparent rounded-full mr-2"></div>
-                                  Loading funding history...
-                                </div>
-                              ) : historyData.length > 0 ? (
-                                <ResponsiveContainer width="100%" height="100%">
-                                  <BarChart data={historyData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                    <XAxis 
-                                      dataKey="time" 
-                                      hide 
-                                    />
-                                    <YAxis 
-                                      hide 
-                                      domain={['auto', 'auto']} 
-                                    />
-                                    <Tooltip content={<FundingTooltip intervalHours={item.fundingIntervalHours || 8} />} cursor={{ fill: 'rgba(255,255,255,0.05)' }} />
-                                    <ReferenceLine y={0} stroke="#27272A" strokeDasharray="3 3" />
-                                    <Bar dataKey="rate" maxBarSize={10}>
-                                      {historyData.map((entry, index) => (
-                                        <Cell
-                                          key={`cell-${index}`}
-                                          fill={entry.rate >= 0 ? '#0ECB81' : '#F6465D'}
-                                          fillOpacity={0.9}
-                                        />
-                                      ))}
-                                    </Bar>
-                                  </BarChart>
-                                </ResponsiveContainer>
-                              ) : (
-                                <div className="h-full flex items-center justify-center text-brand-text-secondary text-sm">
-                                  No history data available
-                                </div>
-                              )}
-                            </div>
-
-                            {/* INDEX CONSTITUENTS + 24H/7D Rate 合并面板 */}
-                            <div className="w-full lg:w-80 bg-brand-dark/40 border border-brand-border/60 rounded-xl p-4">
-                              {constituents.length > 0 && (
-                                <>
-                                  <div className="text-xs uppercase tracking-wider text-brand-text-secondary mb-3">
-                                    Index Constituents
-                                  </div>
-                                  <div className="space-y-3 max-h-[120px] overflow-auto pr-1">
-                                    {constituents.map((entry, idx) => (
-                                      <div key={`${entry.exchange}-${entry.symbol}-${idx}`} className="flex justify-between items-start gap-3">
-                                        <div>
-                                          <div className="text-brand-text-primary text-sm font-semibold">{entry.exchange}</div>
-                                          <div className="text-[10px] text-brand-text-secondary uppercase">{entry.symbol}</div>
-                                        </div>
-                                        <div className="text-right text-xs font-mono">
-                                          <div className="text-brand-text-primary">${Number(entry.price).toFixed(2)}</div>
-                                          <div className="text-brand-text-secondary text-[10px]">{(Number(entry.weight) * 100).toFixed(2)}%</div>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </>
-                              )}
-                              {historyData.length > 0 && (() => {
-                                const now = Date.now();
-                                const ms24h = 24 * 60 * 60 * 1000;
-                                const ms7d = 7 * 24 * 60 * 60 * 1000;
-                                const sum24h = historyData
-                                  .filter(d => now - d.time < ms24h)
-                                  .reduce((s, d) => s + d.rate, 0);
-                                const sum7d = historyData
-                                  .filter(d => now - d.time < ms7d)
-                                  .reduce((s, d) => s + d.rate, 0);
-                                return (
-                                  <div className={`flex gap-6 ${constituents.length > 0 ? 'mt-4 pt-3 border-t border-brand-border/40' : ''}`}>
-                                    <div>
-                                      <div className="text-xs uppercase tracking-wider text-brand-text-secondary mb-1">24H Rate</div>
-                                      <div className={`text-base font-mono font-semibold ${sum24h >= 0 ? 'text-brand-success' : 'text-brand-danger'}`}>
-                                        {(sum24h * 100).toFixed(4)}%
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <div className="text-xs uppercase tracking-wider text-brand-text-secondary mb-1">7D Rate</div>
-                                      <div className={`text-base font-mono font-semibold ${sum7d >= 0 ? 'text-brand-success' : 'text-brand-danger'}`}>
-                                        {(sum7d * 100).toFixed(4)}%
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          </div>
+                          {loadingHistory ? (
+                            <div className="font-mono text-[11px] text-brand-text-muted">loading funding history…</div>
+                          ) : historyData.length > 0 ? (
+                            <FundingGrid
+                              symbol={displaySymbol}
+                              exchange={item.exchange}
+                              intervalHours={item.fundingIntervalHours || 8}
+                              history={historyData}
+                              constituents={constituents}
+                            />
+                          ) : (
+                            <div className="font-mono text-[11px] text-brand-text-muted">no funding history available</div>
+                          )}
                         </td>
                       </tr>
                     )}
