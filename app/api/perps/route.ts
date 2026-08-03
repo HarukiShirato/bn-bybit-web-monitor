@@ -5,7 +5,7 @@ import { getOkxPerps } from '@/lib/exchanges/okx';
 import { getHyperliquidPerps } from '@/lib/exchanges/hyperliquid';
 import { getAsterPerps } from '@/lib/exchanges/aster';
 import { getBatchMarketDataForSymbols } from '@/lib/marketData';
-import { fillMissingIcons } from '@/lib/coinIcons';
+import { fillMissingIcons, getCoinIconMap, baseOfSymbol, stockIcon, STOCK_TICKERS } from '@/lib/coinIcons';
 import { get7dAprMap } from '@/lib/funding7d';
 
 // ISR: 每 120 秒后台自动重新验证
@@ -56,6 +56,7 @@ export interface PerpData {
   hasFundingData?: boolean; // 是否拿到 funding/premium 数据
   hasOpenInterestData?: boolean; // 是否拿到 OI 数据
   apr7d?: number | null; // 近 7 日资金费年化（%），来自采集器历史
+  isTradFi?: boolean; // 股票/商品类永续，市值与币种图标不适用
 }
 
 /**
@@ -115,6 +116,7 @@ export async function GET() {
         fundingIntervalHours: item.fundingIntervalHours,
         hasFundingData: item.hasFundingData ?? true,
         hasOpenInterestData: item.hasOpenInterestData ?? true,
+        isTradFi: item.isTradFi,
       });
     });
 
@@ -234,15 +236,43 @@ export async function GET() {
       }
     });
 
+    // 股票/商品类合约：CoinGecko 会匹配到同名山寨币（COIN -> 8-Bit Coin，
+    // SPY -> Smarty Pay），图标、名称、市值全是错的，这里统一纠正。
+    const iconMap = await getCoinIconMap().catch(() => new Map<string, string>());
+
+    // Binance 用 contractType 权威地标了 150+ 个股票 ticker，拿它当其它所的判据。
+    // 但同名不同物是存在的（Binance 的 WEN 是 Wendy's，别处的 WEN 是 meme 币），
+    // 所以只有在 CoinGecko 认不出这个币（没有市值）时才跟着标记。
+    const binanceTradFiBases = new Set<string>();
+    perpsMap.forEach(perp => {
+      if (perp.exchange === 'Binance' && perp.isTradFi) {
+        const b = baseOfSymbol(perp.symbol);
+        if (b) binanceTradFiBases.add(b);
+      }
+    });
+
+    perpsMap.forEach(perp => {
+      const base = baseOfSymbol(perp.symbol);
+      if (!base) return;
+      const inferred = binanceTradFiBases.has(base) && perp.marketCap == null;
+      if (!perp.isTradFi && !STOCK_TICKERS.has(base) && !inferred) return;
+
+      perp.isTradFi = true;
+      perp.marketCap = null;  // 股票市值不该拿币的市值充数
+      perp.fdv = null;
+      perp.coinName = base;
+      perp.coinImage = stockIcon(base, iconMap) || undefined;
+    });
+
     // CoinGecko 限流时会缺一大片图标，用交易所自己的资产表兜底
     const needIcon = [...new Set(
-      Array.from(perpsMap.values()).filter(p => !p.coinImage).map(p => p.symbol)
+      Array.from(perpsMap.values()).filter(p => !p.coinImage && !p.isTradFi).map(p => p.symbol)
     )];
     if (needIcon.length > 0) {
       const fallbackIcons = await withTimeout(fillMissingIcons(needIcon), 15000, new Map<string, string>());
       if (fallbackIcons.size > 0) {
         perpsMap.forEach(perp => {
-          if (!perp.coinImage) {
+          if (!perp.coinImage && !perp.isTradFi) {
             const url = fallbackIcons.get(perp.symbol);
             if (url) perp.coinImage = url;
           }

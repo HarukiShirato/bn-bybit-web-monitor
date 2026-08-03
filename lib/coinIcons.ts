@@ -88,6 +88,44 @@ export async function getCoinIconMap(): Promise<Map<string, string>> {
 }
 
 /**
+ * 股票 / 商品类合约（NVDA、TSLA、XAU…）。
+ * 这些 ticker 在币圈资产表里会撞上同名山寨币（COIN 撞 8-Bit Coin、SPY 撞
+ * Smarty Pay、META 撞 META [Old]），拿到的图和市值都是错的，所以单独处理。
+ * SPX 故意不在表里：Binance 的 SPXUSDT 是标普永续，别处的 SPXUSDT 是 SPX6900
+ * meme 币，只能靠交易所自己的 contractType 区分。
+ */
+export const STOCK_TICKERS = new Set([
+  'NVDA', 'TSLA', 'AAPL', 'MSFT', 'META', 'GOOGL', 'AMZN', 'COIN', 'MSTR',
+  'HOOD', 'CRCL', 'SPCX', 'QQQ', 'SPY', 'BABA', 'PLTR', 'AMD', 'NFLX',
+  'XAU', 'XAG', 'XAUT',
+]);
+
+// Binance 把股票代币化产品叫 bStocks，资产代码是 ticker + B，带官方 logo
+const STOCK_ICON_ALIAS: Record<string, string> = {
+  XAU: 'XAUT',  // 没有 XAUB，用 Tether Gold 的图代黄金
+  XAUT: 'XAUT',
+};
+
+/**
+ * 股票/商品图标：bStocks 官方 logo 优先，其次 FMP 的股票 logo（免 key），
+ * 都没有就返回 null 让前端显示首字母。
+ * FMP 只认美股代码，港股（HK0700）、未上市标的（OPENAI、ANTHROPIC）会 404，
+ * 由 img onError 兜住。
+ */
+export function stockIcon(base: string, icons: Map<string, string>): string | null {
+  const alias = STOCK_ICON_ALIAS[base];
+  if (alias) return icons.get(alias) || null;
+
+  const bStock = icons.get(base + 'B');
+  if (bStock) return bStock;
+
+  if (/^[A-Z]{1,5}$/.test(base)) {
+    return `https://financialmodelingprep.com/image-stock/${base}.png`;
+  }
+  return null;
+}
+
+/**
  * 第三层：CoinCap 的静态图标地址，纯拼接不发请求。
  * 命中不了的会 404，前端 img onError 会降级成首字母方块，所以这里不预校验
  * （几百个 symbol 逐个 HEAD 太慢，而 404 响应只有 153 字节且浏览器会缓存）。

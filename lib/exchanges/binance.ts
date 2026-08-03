@@ -21,6 +21,7 @@ export interface BinancePerpData {
   fundingIntervalHours: number; // 资金费率结算间隔（小时）
   hasFundingData?: boolean; // 是否拿到 funding/premium 数据
   hasOpenInterestData?: boolean; // 是否拿到 OI 数据
+  isTradFi?: boolean; // TRADIFI_PERPETUAL：股票/商品类永续
 }
 
 const BINANCE_API_BASE = 'https://fapi.binance.com';
@@ -28,7 +29,7 @@ const BINANCE_API_BASE = 'https://fapi.binance.com';
 /**
  * 获取 Binance 永续合约列表
  */
-async function getBinanceSymbols(): Promise<{symbol: string, fundingIntervalHours: number}[]> {
+async function getBinanceSymbols(): Promise<{symbol: string, fundingIntervalHours: number, isTradFi: boolean}[]> {
   try {
     const response = await axios.get(`${BINANCE_API_BASE}/fapi/v1/exchangeInfo`);
     return response.data.symbols
@@ -41,7 +42,8 @@ async function getBinanceSymbols(): Promise<{symbol: string, fundingIntervalHour
       .map((s: any) => ({
         symbol: s.symbol,
         // 如果没有 fundingIntervalHours，默认 8 小时
-        fundingIntervalHours: s.fundingIntervalHours || 8
+        fundingIntervalHours: s.fundingIntervalHours || 8,
+        isTradFi: s.contractType === 'TRADIFI_PERPETUAL',
       }));
   } catch (error) {
     console.error('获取 Binance 合约列表失败:', error);
@@ -272,7 +274,7 @@ export async function getBinancePerps(): Promise<BinancePerpData[]> {
 
     const results: BinancePerpData[] = [];
 
-    for (const {symbol, fundingIntervalHours} of symbolsData) {
+    for (const {symbol, fundingIntervalHours, isTradFi} of symbolsData) {
       const premiumData = premiumIndexMap.get(symbol);
       const tickerData = ticker24hMap.get(symbol);
 
@@ -300,6 +302,7 @@ export async function getBinancePerps(): Promise<BinancePerpData[]> {
         fundingIntervalHours: intervalHours,
         hasFundingData: !!premiumData,
         hasOpenInterestData: !!oi,
+        isTradFi,
       });
     }
 
