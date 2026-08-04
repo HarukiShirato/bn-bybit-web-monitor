@@ -1,0 +1,104 @@
+name: Deploy production
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: perp-dashboard-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:deployment
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::890742583014:role/GitHubActionsPerpDashboardDeployRole
+          aws-region: ap-northeast-1
+
+      - name: Deploy the checked-out commit through SSM
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'GitHub did not provide a 40-character commit SHA' >&2
+            exit 64
+          }
+
+          script_url="https://raw.githubusercontent.com/HarukiShirato/real-time-monitoring-for-perpetual-contracts/${GITHUB_SHA}/scripts/deploy-production.sh"
+          remote_command="$({
+            jq -nr --arg sha "$GITHUB_SHA" --arg script_url "$script_url" '
+              [
+                "set -Eeuo pipefail",
+                "install -d -m 0755 -o ec2-user -g ec2-user /home/ec2-user/apps/perp-dashboard/shared/bin",
+                (
+                  "sudo -u ec2-user -H -- bash -c " +
+                  (
+                    "set -Eeuo pipefail\n" +
+                    "sha=\"$1\"\n" +
+                    "script_url=\"$2\"\n" +
+                    "target=\"/home/ec2-user/apps/perp-dashboard/shared/bin/deploy-production-\($sha).sh\"\n" +
+                    "curl --fail --silent --show-error --location \"$script_url\" --output \"$target\"\n" +
+                    "chmod 0755 \"$target\"\n" +
+                    "exec \"$target\" \"$sha\""
+                    | @sh
+                  ) +
+                  " deploy-production " + ($sha | @sh) + " " + ($script_url | @sh)
+                )
+              ] | join("\n")
+            '
+          })"
+          parameters="$(jq -cn --arg command "$remote_command" '{commands: [$command]}')"
+
+          command_id="$(
+            aws ssm send-command \
+              --region ap-northeast-1 \
+              --instance-ids i-0d3456ec595259c39 \
+              --document-name AWS-RunShellScript \
+              --parameters "$parameters" \
+              --query 'Command.CommandId' \
+              --output text
+          )"
+
+          wait_failed=0
+          if ! aws ssm wait command-executed \
+            --region ap-northeast-1 \
+            --command-id "$command_id" \
+            --instance-id i-0d3456ec595259c39; then
+            wait_failed=1
+          fi
+
+          invocation="$(
+            aws ssm get-command-invocation \
+              --region ap-northeast-1 \
+              --command-id "$command_id" \
+              --instance-id i-0d3456ec595259c39 \
+              --query '{Status:Status,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' \
+              --output json
+          )"
+          status="$(jq -r '.Status // "Unknown"' <<<"$invocation")"
+
+          if [[ "$wait_failed" -ne 0 || "$status" != 'Success' ]]; then
+            output_bytes="$(jq -r '[.StandardOutputContent, .StandardErrorContent] | map(select(type == "string") | length) | add // 0' <<<"$invocation")"
+            printf 'SSM deployment failed (command id: %s, status: %s, remote output: %s bytes [REDACTED]).\n' \
+              "$command_id" "$status" "$output_bytes" >&2
+            exit 1
+          fi

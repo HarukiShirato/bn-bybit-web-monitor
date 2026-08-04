@@ -115,11 +115,65 @@ const file = process.argv[2];
 const source = fs.readFileSync(file, 'utf8');
 
 function assertValues(document) {
-  if (!document || !document.permissions || document.permissions['id-token'] !== 'write') {
-    throw new Error('permissions.id-token must be write');
+  if (!document || !Array.isArray(document.on?.push?.branches) || !document.on.push.branches.includes('master')) {
+    throw new Error('workflow must run on pushes to master');
   }
-  if (!document.concurrency || document.concurrency['cancel-in-progress'] !== false) {
-    throw new Error('concurrency.cancel-in-progress must be false');
+  if (!document.permissions || document.permissions['id-token'] !== 'write' || document.permissions.contents !== 'read') {
+    throw new Error('workflow permissions must grant only the required id-token write and contents read access');
+  }
+  if (!document.concurrency || document.concurrency.group !== 'perp-dashboard-production' || document.concurrency['cancel-in-progress'] !== false) {
+    throw new Error('workflow must serialize production deployments without cancelling an active deployment');
+  }
+
+  const deploy = document.jobs && document.jobs.deploy;
+  if (!deploy || deploy['runs-on'] !== 'ubuntu-latest' || !Array.isArray(deploy.steps)) {
+    throw new Error('workflow must define an ubuntu deploy job with steps');
+  }
+  const uses = (action) => deploy.steps.some((step) => step.uses === action);
+  if (!uses('actions/checkout@v4')) throw new Error('workflow must check out the source');
+  const setupNode = deploy.steps.find((step) => step.uses === 'actions/setup-node@v4');
+  if (!setupNode || String(setupNode.with?.['node-version']) !== '18' || setupNode.with?.cache !== 'npm') {
+    throw new Error('workflow must set up cached Node 18 dependencies');
+  }
+  const credentials = deploy.steps.find((step) => step.uses === 'aws-actions/configure-aws-credentials@v4');
+  if (!credentials || credentials.with?.['role-to-assume'] !== 'arn:aws:iam::890742583014:role/GitHubActionsPerpDashboardDeployRole' || credentials.with?.['aws-region'] !== 'ap-northeast-1') {
+    throw new Error('workflow must use the constrained AWS OIDC deployment role');
+  }
+  const commands = deploy.steps.map((step) => step.run).filter((run) => typeof run === 'string').join('\n');
+  for (const command of ['npm ci', 'npm run build', 'npm run test:deployment']) {
+    if (!commands.includes(command)) throw new Error(`workflow must run ${command}`);
+  }
+
+  const deployScript = deploy.steps.find((step) => step.name === 'Deploy the checked-out commit through SSM')?.run;
+  if (typeof deployScript !== 'string') throw new Error('workflow must have an explicit SSM deployment step');
+  const required = [
+    'GITHUB_SHA',
+    'raw.githubusercontent.com/HarukiShirato/real-time-monitoring-for-perpetual-contracts/',
+    'jq -cn --arg command',
+    "'{commands: [$command]}'",
+    '--parameters "$parameters"',
+    '--region ap-northeast-1',
+    '--instance-ids i-0d3456ec595259c39',
+    '--document-name AWS-RunShellScript',
+    'sudo -u ec2-user -H',
+    'install -d -m 0755 -o ec2-user -g ec2-user',
+    '/home/ec2-user/apps/perp-dashboard/shared/bin',
+    'curl --fail --silent --show-error --location',
+    'target=',
+    'exec ',
+    'aws ssm send-command',
+    "--query 'Command.CommandId'",
+    'aws ssm wait command-executed',
+    'aws ssm get-command-invocation',
+    'Status',
+    'Success',
+    'REDACTED',
+    'exit 1',
+  ];
+  const missing = required.filter((value) => !deployScript.includes(value));
+  if (missing.length) throw new Error(`workflow SSM deployment step is missing: ${missing.join(', ')}`);
+  if (!/GITHUB_SHA[^\n]*\^\[0-9a-f\]\{40\}\$/.test(deployScript)) {
+    throw new Error('workflow must validate the immutable 40-character Git SHA before deployment');
   }
 }
 

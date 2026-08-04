@@ -52,7 +52,44 @@ write('ops/aws/README.md', [
   '[[ "$(jq -r \'.StandardOutputContent\' <<<"$invocation")" == "ssm-ready" ]]',
   '```',
 ].join('\n\n'));
-write('.github/workflows/deploy-production.yml', 'permissions:\n  id-token: write\nconcurrency:\n  cancel-in-progress: false\n');
+write('.github/workflows/deploy-production.yml', [
+  "name: Deploy production",
+  'on:',
+  '  push:',
+  '    branches: [master]',
+  'permissions:',
+  '  contents: read',
+  '  id-token: write',
+  'concurrency:',
+  '  group: perp-dashboard-production',
+  '  cancel-in-progress: false',
+  'jobs:',
+  '  deploy:',
+  '    runs-on: ubuntu-latest',
+  '    steps:',
+  '      - uses: actions/checkout@v4',
+  '      - uses: actions/setup-node@v4',
+  '        with:',
+  "          node-version: '18'",
+  '          cache: npm',
+  '      - run: npm ci',
+  '      - run: npm run build',
+  '      - run: npm run test:deployment',
+  '      - uses: aws-actions/configure-aws-credentials@v4',
+  '        with:',
+  '          role-to-assume: arn:aws:iam::890742583014:role/GitHubActionsPerpDashboardDeployRole',
+  '          aws-region: ap-northeast-1',
+  '      - name: Deploy the checked-out commit through SSM',
+  '        run: |',
+  '          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]',
+  '          script_url="https://raw.githubusercontent.com/HarukiShirato/real-time-monitoring-for-perpetual-contracts/${GITHUB_SHA}/scripts/deploy-production.sh"',
+  "          remote_command=\"$(jq -nr --arg sha \"$GITHUB_SHA\" --arg script_url \"$script_url\" '[\"install -d -m 0755 -o ec2-user -g ec2-user /home/ec2-user/apps/perp-dashboard/shared/bin\", \"sudo -u ec2-user -H\", \"target=/home/ec2-user/apps/perp-dashboard/shared/bin/deploy-production-$sha.sh\", \"curl --fail --silent --show-error --location\", \"exec \\\"$target\\\" \\\"$sha\\\"\"] | join(\"\\\\n\")')\"",
+  "          parameters=\"$(jq -cn --arg command \"$remote_command\" '{commands: [$command]}')\"",
+  "          command_id=\"$(aws ssm send-command --region ap-northeast-1 --instance-ids i-0d3456ec595259c39 --document-name AWS-RunShellScript --parameters \"$parameters\" --query 'Command.CommandId')\"",
+  '          aws ssm wait command-executed "$command_id"',
+  '          aws ssm get-command-invocation --query "Status Success REDACTED"',
+  '          exit 1',
+].join('\n'));
 write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nEXPECTED_USER=ec2-user\nid -un\nflock\nnpm ci\nnpm run build\npm2 reload\ndata.dvcapital.xyz\n');
 write('scripts/migrate-production-layout.sh', [
   '#!/usr/bin/env bash',
@@ -123,6 +160,33 @@ const fs = require('fs');
 fs.writeFileSync(process.argv[2], '# id-token: write\npermissions: {}\nconcurrency:\n  cancel-in-progress: false\n');
 NODE
 expect_fail "$fixture" 'workflow with commented id-token permission'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('sudo -u ec2-user -H', 'sudo -u root -H'));
+NODE
+expect_fail "$fixture" 'SSM deployment that does not switch to ec2-user'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('jq -cn --arg command', 'printf'));
+NODE
+expect_fail "$fixture" 'SSM deployment with manually constructed parameters'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('          exit 1', '          return'));
+NODE
+expect_fail "$fixture" 'SSM deployment that does not fail after a non-success status'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
