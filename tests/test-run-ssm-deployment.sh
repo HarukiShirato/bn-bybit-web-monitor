@@ -52,7 +52,9 @@ fixture="$(make_fixture)"; printf 'Pending\nSuccess\n' >"$fixture/statuses"
 run_case "$fixture" >/dev/null; [[ "$(grep -Fc 'get-command-invocation' "$fixture/calls")" == 2 ]]; rm -rf "$fixture"
 
 fixture="$(make_fixture)"; printf 'Failed\n' >"$fixture/statuses"
-if run_case "$fixture" >/dev/null 2>&1; then exit 1; fi; ! grep -Fq 'cancel-command' "$fixture/calls"; rm -rf "$fixture"
+if run_case "$fixture" >/dev/null 2>&1; then exit 1; fi
+if grep -Fq 'cancel-command' "$fixture/calls"; then echo 'failed command should not be cancelled again' >&2; exit 1; fi
+rm -rf "$fixture"
 
 fixture="$(make_fixture)"; printf 'Pending\nPending\nPending\nCancelled\n' >"$fixture/statuses"
 if run_case "$fixture" >/dev/null 2>&1; then exit 1; fi; grep -Fq 'cancel-command' "$fixture/calls"; rm -rf "$fixture"

@@ -146,7 +146,8 @@ function assertValues(document) {
   if (typeof deployRunnerScript !== 'string' || !deployRunnerScript.includes('bash scripts/run-ssm-deployment.sh') || !deployRunnerScript.includes('::add-mask::') || !deployRunnerScript.includes('sudo -u ec2-user -H')) {
     throw new Error('deploy job must invoke the tested SSM state machine after masking credentials');
   }
-  return;
+  /* Removed legacy single-job validation. The workflow is validated above as verify -> deploy. */
+  /*
   if (!sameKeys(document.permissions, ['id-token', 'contents']) || document.permissions['id-token'] !== 'write' || document.permissions.contents !== 'read') {
     throw new Error('workflow permissions must be exactly id-token write and contents read');
   }
@@ -235,6 +236,7 @@ function assertValues(document) {
   if (!/GITHUB_SHA[^\n]*\^\[0-9a-f\]\{40\}\$/.test(deployScript)) {
     throw new Error('workflow must validate the immutable 40-character Git SHA before deployment');
   }
+  */
 }
 
 try {
