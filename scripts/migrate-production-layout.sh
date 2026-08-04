@@ -44,9 +44,11 @@ chmod 0600 "$SHARED/.env"
 
 patch_tmp="$PATCH.tmp.$$"
 checksum_tmp="$CHECKSUM.tmp.$$"
-backup=""
+original_dump_backup=""
+runtime_snapshot=""
 restore_tmp=""
 dump_existed=0
+pm2_dump_saved=0
 collectors_stopped=0
 completed=0
 
@@ -68,19 +70,30 @@ data_manifest() {
   done < <(find "$root" -type f -print | LC_ALL=C sort)
 }
 
-restore_previous_pm2() {
-  pm2 delete "${PM2_TARGETS[@]}" || echo 'unable to delete migration PM2 targets before recovery' >&2
-  [[ -n "$backup" && -f "$backup" ]] || return 1
-
+restore_dump_atomically() {
+  local source="$1"
   restore_tmp="$PM2_HOME_DIR/.dump.pm2.migration-restore.$$.tmp"
-  cp -- "$backup" "$restore_tmp"
+  cp -- "$source" "$restore_tmp"
   mv -f -- "$restore_tmp" "$PM2_DUMP"
   restore_tmp=""
-  pm2 resurrect
+}
 
-  if (( ! dump_existed )); then
+restore_original_dump() {
+  if (( dump_existed )); then
+    [[ -n "$original_dump_backup" && -f "$original_dump_backup" ]] || return 1
+    restore_dump_atomically "$original_dump_backup"
+  elif (( pm2_dump_saved )); then
     rm -f -- "$PM2_DUMP"
   fi
+}
+
+restore_previous_pm2() {
+  pm2 delete "${PM2_TARGETS[@]}" || echo 'unable to delete migration PM2 targets before recovery' >&2
+  [[ -n "$runtime_snapshot" && -f "$runtime_snapshot" ]] || return 1
+
+  restore_dump_atomically "$runtime_snapshot"
+  pm2 resurrect
+  restore_original_dump
 }
 
 cleanup() {
@@ -88,12 +101,17 @@ cleanup() {
 
   trap - EXIT
   set +e
-  if (( ! completed && collectors_stopped )) && [[ -n "$backup" && -f "$backup" ]]; then
-    echo 'migration failed after collector stop; restoring previous PM2 processes' >&2
-    restore_previous_pm2 || echo 'unable to restore the previous PM2 process snapshot' >&2
+  if (( ! completed )); then
+    if (( collectors_stopped )) && [[ -n "$runtime_snapshot" && -f "$runtime_snapshot" ]]; then
+      echo 'migration failed after collector stop; restoring previous PM2 processes' >&2
+      restore_previous_pm2 || echo 'unable to restore the previous PM2 process snapshot' >&2
+    else
+      restore_original_dump || echo 'unable to restore the previous PM2 dump' >&2
+    fi
   fi
   rm -f -- "$patch_tmp" "$checksum_tmp" "$restore_tmp"
-  [[ -z "$backup" ]] || rm -f -- "$backup"
+  [[ -z "$original_dump_backup" ]] || rm -f -- "$original_dump_backup"
+  [[ -z "$runtime_snapshot" ]] || rm -f -- "$runtime_snapshot"
   exit "$status"
 }
 trap cleanup EXIT
@@ -117,12 +135,19 @@ archive_legacy_diff
 sync_legacy_data
 
 [[ -f "$CURRENT/ecosystem.config.cjs" ]] || fail "current ecosystem config is missing: $CURRENT/ecosystem.config.cjs"
-[[ ! -e "$PM2_DUMP" ]] || dump_existed=1
+if [[ -e "$PM2_DUMP" ]]; then
+  [[ -f "$PM2_DUMP" ]] || fail "PM2 dump is not a regular file: $PM2_DUMP"
+  dump_existed=1
+  original_dump_backup="$(mktemp "$APP_ROOT/.pm2-original-dump.XXXXXX")"
+  chmod 0600 "$original_dump_backup"
+  cp -- "$PM2_DUMP" "$original_dump_backup"
+fi
 pm2 save
 [[ -f "$PM2_DUMP" ]] || fail "PM2 did not create its process dump: $PM2_DUMP"
-backup="$(mktemp "$APP_ROOT/.pm2-before-production-layout.XXXXXX")"
-chmod 0600 "$backup"
-cp -- "$PM2_DUMP" "$backup"
+pm2_dump_saved=1
+runtime_snapshot="$(mktemp "$APP_ROOT/.pm2-runtime-snapshot.XXXXXX")"
+chmod 0600 "$runtime_snapshot"
+cp -- "$PM2_DUMP" "$runtime_snapshot"
 
 # Keep the writer outage to the final synchronization and the PM2 cwd switch.
 collectors_stopped=1
@@ -135,9 +160,9 @@ shared_manifest_after_final="$(data_manifest "$SHARED_DATA")"
 pm2 startOrRestart "$CURRENT/ecosystem.config.cjs" --update-env
 curl --fail --silent --show-error --max-time 10 "$LOCAL_HEALTH_URL" >/dev/null
 curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null
+pm2 save
+[[ -f "$PM2_DUMP" ]] || fail "PM2 did not persist the current process dump: $PM2_DUMP"
 
 collectors_stopped=0
 completed=1
-rm -f -- "$backup"
-backup=""
 echo 'production runtime layout migration completed'

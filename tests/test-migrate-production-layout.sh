@@ -13,6 +13,7 @@ fail() {
 [[ -f "$script" ]] || fail 'migration script is missing'
 
 make_fixture() {
+  local original_dump_mode="${1:-absent}"
   local fixture
   fixture="$(mktemp -d)"
   local app_root="$fixture/app"
@@ -38,6 +39,19 @@ fs.writeFileSync(file, JSON.stringify({ apps: [
 ] }, null, 2));
 NODE
   cp "$fixture/initial-state.json" "$fixture/pm2-state.json"
+  if [[ "$original_dump_mode" == present ]]; then
+    node - "$pm2_home/dump.pm2" <<'NODE'
+const fs = require('fs');
+const names = [
+  'perp-dashboard', 'funding-collector', 'arbitrage-collector', 'staking-collector', 'positions-collector',
+];
+fs.writeFileSync(process.argv[2], JSON.stringify({ apps: [
+  ...names.map((name) => ({ name, cwd: '/persisted-before-migration', status: 'stopped' })),
+  { name: 'unrelated-worker', cwd: '/persisted-unrelated', status: 'stopped', restarts: 99 },
+] }, null, 2));
+NODE
+    cp "$pm2_home/dump.pm2" "$fixture/expected-original-dump.pm2"
+  fi
 
   cat >"$fixture/bin/git" <<'EOF'
 #!/usr/bin/env bash
@@ -176,6 +190,7 @@ NODE
     [[ ! -e "$fixture/pm2-home/dump.pm2" ]] || fail 'recovery left a dump.pm2 that did not exist before migration'
   else
     [[ -f "$fixture/pm2-home/dump.pm2" ]] || fail 'recovery removed a pre-existing dump.pm2'
+    cmp -s "$fixture/expected-original-dump.pm2" "$fixture/pm2-home/dump.pm2" || fail 'recovery changed the pre-existing PM2 dump'
   fi
   grep -Fxq 'save' "$fixture/pm2.log" || fail 'PM2 snapshot did not use pm2 save without arguments'
   grep -Fxq 'resurrect' "$fixture/pm2.log" || fail 'PM2 recovery did not use pm2 resurrect without arguments'
@@ -183,8 +198,20 @@ NODE
   ! grep -Fq 'unrelated-worker' "$fixture/pm2.log" || fail 'migration directly touched an unrelated PM2 process'
 }
 
+assert_dump_targets_current() {
+  node - "$1/pm2-home/dump.pm2" "$1/app/current" <<'NODE'
+const fs = require('fs');
+const [file, current] = process.argv.slice(2);
+const names = new Set(['perp-dashboard', 'funding-collector', 'arbitrage-collector', 'staking-collector', 'positions-collector']);
+const dump = JSON.parse(fs.readFileSync(file));
+const targets = dump.apps.filter((app) => names.has(app.name));
+if (targets.length !== names.size || targets.some((app) => app.cwd !== current || app.status !== 'online')) process.exit(1);
+NODE
+}
+
 fixture="$(make_fixture)"
 run_migration "$fixture"
+assert_dump_targets_current "$fixture" || fail 'successful migration did not persist the current PM2 configuration'
 rm -f -- "$fixture/collectors-stopped"
 run_migration "$fixture"
 assert_data_manifest_matches "$fixture" || fail 'shared data manifest differs after idempotent migration'
@@ -215,8 +242,7 @@ for failure in final_rsync pm2_start local_health public_health manifest; do
   rm -rf -- "$fixture"
 done
 
-fixture="$(make_fixture)"
-cp "$fixture/initial-state.json" "$fixture/pm2-home/dump.pm2"
+fixture="$(make_fixture present)"
 if run_migration "$fixture" env FAIL_PM2_START=1; then
   fail 'failure with an existing PM2 dump unexpectedly succeeded'
 fi
