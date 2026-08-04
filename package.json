@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:deployment": "bash tests/test-deployment-assets-contract.sh && bash tests/test-deploy-production.sh && bash tests/test-deployment-assets.sh"
+    "test:deployment": "bash tests/test-deployment-assets-contract.sh && bash tests/test-deploy-production.sh && bash tests/test-migrate-production-layout.sh && bash tests/test-deployment-assets.sh"
   },
   "dependencies": {
     "@coingecko/coingecko-typescript": "^2.2.0",

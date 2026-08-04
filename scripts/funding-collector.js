@@ -9,7 +9,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = process.env.PERP_DATA_DIR || path.join(__dirname, '..', 'data');
 const DATA_FILE = path.join(DATA_DIR, 'funding-history.json');
 const MAX_AGE_MS = 31 * 24 * 60 * 60 * 1000;
 

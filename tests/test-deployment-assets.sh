@@ -285,11 +285,27 @@ fi
 
 if require_file scripts/migrate-production-layout.sh; then
   bash -n scripts/migrate-production-layout.sh || fail 'migrate-production-layout.sh has invalid Bash syntax'
+  contains_all scripts/migrate-production-layout.sh \
+    'rsync -a' 'git diff' 'sha256sum' '/home/ec2-user/perp-dashboard/.env' \
+    'pm2 stop funding-collector arbitrage-collector staking-collector positions-collector' \
+    'pm2 startOrRestart' 'pm2 resurrect'
+  if grep -Fq 'rm -rf /home/ec2-user/perp-dashboard' scripts/migrate-production-layout.sh; then
+    fail 'migrate-production-layout.sh must not delete the legacy checkout'
+  fi
 fi
 
 if require_file ecosystem.config.cjs; then
   node --check ecosystem.config.cjs || fail 'ecosystem.config.cjs has invalid JavaScript syntax'
+  contains_all ecosystem.config.cjs \
+    'perp-dashboard' 'funding-collector' 'arbitrage-collector' 'staking-collector' 'positions-collector' \
+    'cwd: CURRENT' 'PERP_DATA_DIR: SHARED_DATA'
 fi
+
+for collector in scripts/funding-collector.js scripts/arbitrage-collector.js scripts/staking-collector.js scripts/positions-collector.js; do
+  if require_file "$collector"; then
+    contains_all "$collector" 'process.env.PERP_DATA_DIR'
+  fi
+done
 
 scan_for_secrets
 

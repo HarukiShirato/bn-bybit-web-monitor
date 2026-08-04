@@ -54,8 +54,35 @@ write('ops/aws/README.md', [
 ].join('\n\n'));
 write('.github/workflows/deploy-production.yml', 'permissions:\n  id-token: write\nconcurrency:\n  cancel-in-progress: false\n');
 write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nflock\nnpm ci\nnpm run build\npm2 reload\ndata.dvcapital.xyz\n');
-write('scripts/migrate-production-layout.sh', '#!/usr/bin/env bash\n');
-write('ecosystem.config.cjs', "module.exports = { 'AWS_ACCESS_KEY_ID': '$AWS_ACCESS_KEY_ID', 'AWS_SESSION_TOKEN': '${{ secrets.X }}' };\n");
+write('scripts/migrate-production-layout.sh', [
+  '#!/usr/bin/env bash',
+  'rsync -a legacy/data/ shared/data/',
+  'git diff > legacy-code-diff-20260804.patch',
+  'sha256sum legacy-code-diff-20260804.patch',
+  'test -f /home/ec2-user/perp-dashboard/.env',
+  'pm2 stop funding-collector arbitrage-collector staking-collector positions-collector',
+  'pm2 startOrRestart ecosystem.config.cjs',
+  'pm2 resurrect previous.pm2',
+].join('\n'));
+write('ecosystem.config.cjs', [
+  'const CURRENT = "current";',
+  'const SHARED_DATA = "shared/data";',
+  'module.exports = { apps: [',
+  '  { name: "perp-dashboard", cwd: CURRENT },',
+  '  { name: "funding-collector", cwd: CURRENT, env: { PERP_DATA_DIR: SHARED_DATA } },',
+  '  { name: "arbitrage-collector", cwd: CURRENT, env: { PERP_DATA_DIR: SHARED_DATA } },',
+  '  { name: "staking-collector", cwd: CURRENT, env: { PERP_DATA_DIR: SHARED_DATA } },',
+  '  { name: "positions-collector", cwd: CURRENT, env: { PERP_DATA_DIR: SHARED_DATA } },',
+  '] };',
+].join('\n'));
+for (const collector of [
+  'funding-collector.js',
+  'arbitrage-collector.js',
+  'staking-collector.js',
+  'positions-collector.js',
+]) {
+  write(`scripts/${collector}`, 'const dataDir = process.env.PERP_DATA_DIR;\n');
+}
 NODE
   printf '%s\n' "$fixture"
 }

@@ -25,7 +25,7 @@ try {
   });
 } catch (e) { /* .env 缺失时下面的凭证检查会兜住 */ }
 
-const OUT_FILE = path.join(__dirname, "..", "data", "positions-eb65.json");
+const OUT_FILE = path.join(process.env.PERP_DATA_DIR || path.join(__dirname, "..", "data"), "positions-eb65.json");
 const INTERVAL_MS = 60 * 1000;
 // 收益流水是历史数据，不需要跟持仓一样每分钟重拉
 const SLOW_INTERVAL_MS = 10 * 60 * 1000;
