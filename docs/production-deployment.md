@@ -99,6 +99,8 @@ sha256sum --check "$APP_ROOT/legacy-code-untracked-20260804.tar.sha256"
 ```bash
 set -Eeuo pipefail
 APP_ROOT=/home/ec2-user/apps/perp-dashboard
+exec 9>"$APP_ROOT/deploy.lock"
+flock -n 9 || { echo 'deployment lock is held; check GitHub Actions and SSM before retrying rollback' >&2; exit 75; }
 target="$(readlink -f "$APP_ROOT/previous")"
 test -d "$target"
 test "$(dirname "$target")" = "$APP_ROOT/releases"
