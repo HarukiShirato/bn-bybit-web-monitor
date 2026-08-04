@@ -31,6 +31,7 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: arn:aws:iam::890742583014:role/GitHubActionsPerpDashboardDeployRole
@@ -44,21 +45,13 @@ jobs:
             [[ -z "$sensitive_value" ]] || printf '::add-mask::%s\n' "$sensitive_value"
           done
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
-          parameters="$(jq -cn --arg sha "$GITHUB_SHA" '{CommitSha:[$sha]}')"
-          command_id="$(aws ssm send-command \
-            --document-name PerpDashboardDeploy \
-            --instance-ids i-0d3456ec595259c39 \
-            --parameters "$parameters" \
-            --timeout-seconds 900 \
-            --query 'Command.CommandId' --output text)"
-          for attempt in {1..90}; do
-            invocation="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id i-0d3456ec595259c39 --output json)"
-            status="$(jq -r .Status <<<"$invocation")"
-            case "$status" in
-              Success) jq -r '.StandardOutputContent,.StandardErrorContent' <<<"$invocation"; exit 0 ;;
-              Failed|Cancelled|TimedOut|Undeliverable|Terminated) jq -r '.StandardOutputContent,.StandardErrorContent' <<<"$invocation"; exit 1 ;;
-            esac
-            sleep 10
-          done
-          aws ssm cancel-command --command-id "$command_id" --instance-ids i-0d3456ec595259c39
-          exit 1
+          script_url="https://raw.githubusercontent.com/HarukiShirato/real-time-monitoring-for-perpetual-contracts/${GITHUB_SHA}/scripts/deploy-production.sh"
+          remote_command="$(jq -nr --arg sha "$GITHUB_SHA" --arg script_url "$script_url" '
+            [
+              "set -Eeuo pipefail",
+              "install -d -m 0755 -o ec2-user -g ec2-user /home/ec2-user/apps/perp-dashboard/shared/bin",
+              ("sudo -u ec2-user -H -- bash -c " +
+                ("set -Eeuo pipefail\nsha=\"$1\"\nscript_url=\"$2\"\ntarget=\"/home/ec2-user/apps/perp-dashboard/shared/bin/deploy-production-\($sha).sh\"\ncurl --fail --silent --show-error --location \"$script_url\" --output \"$target\"\nchmod 0755 \"$target\"\nexec \"$target\" \"$sha\"" | @sh) +
+                " deploy-production " + ($sha | @sh) + " " + ($script_url | @sh))
+            ] | join("\n")')"
+          bash scripts/run-ssm-deployment.sh "$GITHUB_SHA" "$remote_command"

@@ -5,7 +5,7 @@
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": [
-        "arn:aws:ssm:ap-northeast-1:890742583014:document/PerpDashboardDeploy",
+        "arn:aws:ssm:ap-northeast-1::document/AWS-RunShellScript",
         "arn:aws:ec2:ap-northeast-1:890742583014:instance/i-0d3456ec595259c39"
       ]
     },

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly EXPECTED_USER="${EXPECTED_USER:-perp-dashboard}"
-readonly APP_ROOT="${APP_ROOT:-/home/perp-dashboard/apps/perp-dashboard}"
+readonly EXPECTED_USER="${EXPECTED_USER:-ec2-user}"
+readonly APP_ROOT="${APP_ROOT:-/home/ec2-user/apps/perp-dashboard}"
 readonly LEGACY_ROOT="${LEGACY_ROOT:-/home/ec2-user/perp-dashboard}"
-readonly PREPARED_SHA="${1:-${PREPARED_SHA:-}}"
 readonly SHARED="$APP_ROOT/shared"
 readonly SHARED_DATA="$SHARED/data"
 readonly CURRENT="$APP_ROOT/current"
@@ -197,9 +196,6 @@ dump_tmp="$PM2_HOME_DIR/.dump.pm2.migration.$$.tmp"
 dump_existed=0
 collectors_stopped=0
 completed=0
-pm2_snapshot_initialized=0
-pm2_dump_modified=0
-current_created=0
 
 restore_original_dump() {
   if (( dump_existed )); then cp -- "$original_dump_backup" "$dump_tmp" && mv -f -- "$dump_tmp" "$PM2_DUMP"; else rm -f -- "$PM2_DUMP"; fi
@@ -214,12 +210,9 @@ cleanup() {
       pm2 delete "${PM2_TARGETS[@]}" || true
       pm2 startOrRestart "$runtime_snapshot" --update-env || echo 'unable to restore migration PM2 targets' >&2
     fi
-    if (( pm2_snapshot_initialized && pm2_dump_modified )); then
-      restore_original_dump || echo 'unable to restore the original PM2 dump' >&2
-    fi
+    restore_original_dump || echo 'unable to restore the original PM2 dump' >&2
   fi
   rm -f -- "$runtime_snapshot" "$jlist_before" "$jlist_after" "$dump_tmp"
-  if (( ! completed && current_created )) && [[ -L "$CURRENT" ]]; then rm -f -- "$CURRENT"; fi
   [[ -z "$original_dump_backup" ]] || rm -f -- "$original_dump_backup"
   exit "$status"
 }
@@ -246,14 +239,6 @@ umask 027
 install -d -m 0750 "$SHARED" "$SHARED_DATA"
 chmod 0750 "$SHARED" "$SHARED_DATA"
 require_owner "$app_real"; require_owner "$SHARED"; require_owner "$SHARED_DATA"
-if [[ ! -e "$CURRENT" ]]; then
-  [[ "$PREPARED_SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'prepared release SHA is required for first migration'
-  prepared="$APP_ROOT/releases/$PREPARED_SHA"
-  [[ -f "$prepared/.deployment-prepared.json" && -f "$prepared/ecosystem.config.cjs" ]] || fail 'prepared release is missing or invalid'
-  ln -s "$SHARED/data" "$prepared/data" 2>/dev/null || [[ "$(readlink "$prepared/data")" == "$SHARED/data" ]] || fail 'prepared data link failed'
-  ln -s "$prepared" "$CURRENT"
-  current_created=1
-fi
 [[ -f "$CURRENT/ecosystem.config.cjs" ]] || fail "current ecosystem config is missing: $CURRENT/ecosystem.config.cjs"
 
 if [[ -f "$MARKER" ]]; then
@@ -266,8 +251,6 @@ fi
 
 [[ -f "$LEGACY_ENV" && -r "$LEGACY_ENV" ]] || fail "legacy .env is required and must be readable: /home/ec2-user/perp-dashboard/.env"
 install -m 0600 "$LEGACY_ENV" "$SHARED/.env"; chmod 0600 "$SHARED/.env"; require_owner "$SHARED/.env"
-current_real="$(canonical_path "$CURRENT")"
-ln -s "$SHARED/.env" "$current_real/.env" 2>/dev/null || [[ "$(readlink "$current_real/.env")" == "$SHARED/.env" ]] || fail 'runtime env link failed'
 archive_legacy_audit
 if [[ -e "$PM2_DUMP" ]]; then
   [[ -f "$PM2_DUMP" ]] || fail 'PM2 dump is not a regular file'
@@ -276,7 +259,6 @@ fi
 pm2 jlist >"$jlist_before"
 runtime_snapshot="$(mktemp "$APP_ROOT/.pm2-target-snapshot.XXXXXX")"
 build_target_snapshot "$jlist_before" "$runtime_snapshot"
-pm2_snapshot_initialized=1
 
 collectors_stopped=1
 pm2 stop funding-collector arbitrage-collector staking-collector positions-collector
@@ -291,10 +273,7 @@ curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null
 pm2_verify_current "$jlist_after" || fail 'PM2 targets did not switch to current'
 merge_target_dump "$jlist_after" "$dump_tmp"
 mv -f -- "$dump_tmp" "$PM2_DUMP"
-pm2_dump_modified=1
 write_marker "$(data_summary "$legacy_manifest_before_final")"
-printf '{"sha":"%s","deployed_at":"%s","source":"initial-migration"}\n' \
-  "${PREPARED_SHA:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$CURRENT/.deployment-success.json"
 collectors_stopped=0
 completed=1
 echo 'production runtime layout migration completed'

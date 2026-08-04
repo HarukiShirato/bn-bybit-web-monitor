@@ -1,4 +1,4 @@
-const APP_ROOT = '/home/perp-dashboard/apps/perp-dashboard';
+const APP_ROOT = '/home/ec2-user/apps/perp-dashboard';
 const CURRENT = `${APP_ROOT}/current`;
 const SHARED_DATA = `${APP_ROOT}/shared/data`;
 
