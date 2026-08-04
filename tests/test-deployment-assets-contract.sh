@@ -33,7 +33,7 @@ const permissions = {
       'arn:aws:ssm:ap-northeast-1::document/AWS-RunShellScript',
       'arn:aws:ec2:ap-northeast-1:890742583014:instance/i-0d3456ec595259c39',
     ] },
-    { Effect: 'Allow', Action: ['ssm:GetCommandInvocation', 'ssm:ListCommandInvocations'], Resource: '*' },
+    { Effect: 'Allow', Action: 'ssm:GetCommandInvocation', Resource: '*' },
   ],
 };
 write('ops/aws/github-oidc-trust-policy.json', JSON.stringify(trust));
@@ -44,12 +44,14 @@ write('ops/aws/README.md', [
   'aws iam create-role',
   'aws iam put-role-policy',
   'aws ssm describe-instance-information',
-  'aws ssm send-command',
-  '--region ap-northeast-1',
-  '--instance-ids i-0d3456ec595259c39',
-  '--document-name AWS-RunShellScript',
-  "--parameters 'commands=[\"printf ssm-ready\"]'",
-].join('\\n'));
+  '```bash',
+  'command_id="$( aws ssm send-command --region ap-northeast-1 --instance-ids i-0d3456ec595259c39 --document-name AWS-RunShellScript --parameters \'commands=["printf ssm-ready"]\' --query \'Command.CommandId\' --output text )"',
+  'aws ssm wait command-executed --region ap-northeast-1 --command-id "$command_id" --instance-id i-0d3456ec595259c39',
+  'invocation="$( aws ssm get-command-invocation --region ap-northeast-1 --command-id "$command_id" --instance-id i-0d3456ec595259c39 --query \'{Status:Status,StandardOutputContent:StandardOutputContent}\' --output json )"',
+  '[[ "$(jq -r \'.Status\' <<<"$invocation")" == "Success" ]]',
+  '[[ "$(jq -r \'.StandardOutputContent\' <<<"$invocation")" == "ssm-ready" ]]',
+  '```',
+].join('\n\n'));
 write('.github/workflows/deploy-production.yml', 'permissions:\n  id-token: write\nconcurrency:\n  cancel-in-progress: false\n');
 write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nflock\nnpm ci\nnpm run build\npm2 reload\ndata.dvcapital.xyz\n');
 write('scripts/migrate-production-layout.sh', '#!/usr/bin/env bash\n');
@@ -104,6 +106,42 @@ policy.Statement = [policy.Statement[0]];
 fs.writeFileSync(file, JSON.stringify(policy));
 NODE
 expect_fail "$fixture" 'missing command-status read permissions'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/ops/aws/github-deploy-permissions.json" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+const policy = JSON.parse(fs.readFileSync(file));
+policy.Statement[0].Resource[1] = policy.Statement[0].Resource[0];
+fs.writeFileSync(file, JSON.stringify(policy));
+NODE
+expect_fail "$fixture" 'duplicate SSM resource replacing the target instance'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/ops/aws/README.md" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+const source = fs.readFileSync(file, 'utf8');
+fs.writeFileSync(file, source.replace('--instance-id i-0d3456ec595259c39', ''));
+NODE
+expect_fail "$fixture" 'SSM readiness probe missing the wait instance id'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/ops/aws/README.md" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+fs.writeFileSync(file, [
+  'aws ssm send-command --query \'Command.CommandId\'',
+  'aws ssm wait command-executed --command-id "$command_id" --instance-id i-0d3456ec595259c39',
+  'aws ssm get-command-invocation --command-id "$command_id" --instance-id i-0d3456ec595259c39',
+  'Success',
+  'ssm-ready',
+].join('\\n'));
+NODE
+expect_fail "$fixture" 'scattered SSM readiness instructions'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"

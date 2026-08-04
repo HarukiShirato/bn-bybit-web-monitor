@@ -42,8 +42,16 @@ try {
 
 const statements = Array.isArray(policy.Statement) ? policy.Statement : [policy.Statement];
 const asArray = (value) => Array.isArray(value) ? value : [value];
-const sameSet = (actual, expected) =>
-  actual.length === expected.length && actual.every((value) => expected.includes(value));
+const sameSet = (actual, expected) => {
+  const actualSet = new Set(actual);
+  const expectedSet = new Set(expected);
+  return (
+    actualSet.size === actual.length &&
+    expectedSet.size === expected.length &&
+    actualSet.size === expectedSet.size &&
+    [...actualSet].every((value) => expectedSet.has(value))
+  );
+};
 
 if (kind === 'trust') {
   const statement = statements[0];
@@ -78,7 +86,7 @@ const expectedResources = new Set([
 ]);
 const sendCommand = statements.find((statement) => asArray(statement && statement.Action).includes('ssm:SendCommand'));
 const statusRead = statements.find((statement) =>
-  sameSet(asArray(statement && statement.Action), ['ssm:GetCommandInvocation', 'ssm:ListCommandInvocations'])
+  sameSet(asArray(statement && statement.Action), ['ssm:GetCommandInvocation'])
 );
 const valid =
   statements.length === 2 &&
@@ -88,10 +96,10 @@ const valid =
   sameSet(asArray(sendCommand.Resource), [...expectedResources]) &&
   statusRead &&
   statusRead.Effect === 'Allow' &&
-  sameSet(asArray(statusRead.Action), ['ssm:GetCommandInvocation', 'ssm:ListCommandInvocations']) &&
+  sameSet(asArray(statusRead.Action), ['ssm:GetCommandInvocation']) &&
   sameSet(asArray(statusRead.Resource), ['*']);
 if (!valid) {
-  console.error(`${file}: must contain only exact SendCommand and command-status read permissions`);
+  console.error(`${file}: must contain only exact SendCommand and GetCommandInvocation permissions`);
   process.exit(1);
 }
 NODE
@@ -137,15 +145,53 @@ const required = [
   'aws iam create-role',
   'aws iam put-role-policy',
   'aws ssm describe-instance-information',
-  'aws ssm send-command',
-  '--region ap-northeast-1',
-  '--instance-ids i-0d3456ec595259c39',
-  '--document-name AWS-RunShellScript',
-  "--parameters 'commands=[\"printf ssm-ready\"]'",
 ];
 const missing = required.filter((value) => !source.includes(value));
 if (missing.length) {
   console.error(`${file}: missing required AWS setup instructions: ${missing.join(', ')}`);
+  process.exit(1);
+}
+
+const probeBlocks = [...source.matchAll(/```bash\n([\s\S]*?)```/g)]
+  .map((match) => match[1])
+  .filter((block) => block.includes('aws ssm send-command'));
+if (probeBlocks.length !== 1) {
+  console.error(`${file}: must contain exactly one executable SSM readiness probe block`);
+  process.exit(1);
+}
+const probe = probeBlocks[0];
+const sendCommand = probe.match(/command_id="\$\(\s*([\s\S]*?)\s*\)"/)?.[1];
+const waitCommand = probe.match(/aws ssm wait command-executed[\s\S]*?(?=\n\s*\n|$)/)?.[0];
+const getCommand = probe.match(/invocation="\$\(\s*([\s\S]*?)\s*\)"/)?.[1];
+const includesAll = (command, values) => command && values.every((value) => command.includes(value));
+const validProbe =
+  includesAll(sendCommand, [
+    'aws ssm send-command',
+    '--region ap-northeast-1',
+    '--instance-ids i-0d3456ec595259c39',
+    '--document-name AWS-RunShellScript',
+    "--parameters 'commands=[\"printf ssm-ready\"]'",
+    "--query 'Command.CommandId'",
+    '--output text',
+  ]) &&
+  includesAll(waitCommand, [
+    'aws ssm wait command-executed',
+    '--region ap-northeast-1',
+    '--command-id "$command_id"',
+    '--instance-id i-0d3456ec595259c39',
+  ]) &&
+  includesAll(getCommand, [
+    'aws ssm get-command-invocation',
+    '--region ap-northeast-1',
+    '--command-id "$command_id"',
+    '--instance-id i-0d3456ec595259c39',
+    "--query '{Status:Status,StandardOutputContent:StandardOutputContent}'",
+    '--output json',
+  ]) &&
+  /jq -r '\.Status' <<<"\$invocation"[^\n]*== "Success"/.test(probe) &&
+  /jq -r '\.StandardOutputContent' <<<"\$invocation"[^\n]*== "ssm-ready"/.test(probe);
+if (!validProbe) {
+  console.error(`${file}: SSM readiness probe must capture one CommandId, wait and retrieve that invocation, then verify Success and stdout`);
   process.exit(1);
 }
 NODE

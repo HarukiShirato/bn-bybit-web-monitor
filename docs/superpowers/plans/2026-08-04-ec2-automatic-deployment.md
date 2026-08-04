@@ -134,7 +134,7 @@ Use this exact condition so only `master` in this repository can assume the role
 
 - [ ] **Step 2: Create the SSM permissions policy**
 
-Allow the standard shell document only for the target instance, plus command-status reads:
+Allow the standard shell document only for the target instance, plus the exact command-result read required for that invocation:
 
 ```json
 {
@@ -150,7 +150,7 @@ Allow the standard shell document only for the target instance, plus command-sta
     },
     {
       "Effect": "Allow",
-      "Action": ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+      "Action": "ssm:GetCommandInvocation",
       "Resource": "*"
     }
   ]
@@ -165,16 +165,34 @@ Document commands that:
 2. create `GitHubActionsPerpDashboardDeployRole` with the trust policy;
 3. attach the inline SSM policy;
 4. verify the instance appears as an SSM managed node;
-5. run a harmless `printf` command through SSM.
+5. run a harmless `printf` command through SSM, capture its `CommandId`, wait for that exact instance command, retrieve the same invocation, and verify `Success` plus its stdout.
 
-The harmless verification must be:
+The harmless verification must capture the returned `CommandId`, wait for that instance command, retrieve the same invocation, and assert both `Success` and stdout `ssm-ready`:
 
 ```bash
-aws ssm send-command \
+command_id="$(
+  aws ssm send-command \
+    --region ap-northeast-1 \
+    --instance-ids i-0d3456ec595259c39 \
+    --document-name AWS-RunShellScript \
+    --parameters 'commands=["printf ssm-ready"]' \
+    --query 'Command.CommandId' \
+    --output text
+)"
+aws ssm wait command-executed \
   --region ap-northeast-1 \
-  --instance-ids i-0d3456ec595259c39 \
-  --document-name AWS-RunShellScript \
-  --parameters 'commands=["printf ssm-ready"]'
+  --command-id "$command_id" \
+  --instance-id i-0d3456ec595259c39
+invocation="$(
+  aws ssm get-command-invocation \
+    --region ap-northeast-1 \
+    --command-id "$command_id" \
+    --instance-id i-0d3456ec595259c39 \
+    --query '{Status:Status,StandardOutputContent:StandardOutputContent}' \
+    --output json
+)"
+[[ "$(jq -r '.Status' <<<"$invocation")" == "Success" ]]
+[[ "$(jq -r '.StandardOutputContent' <<<"$invocation")" == "ssm-ready" ]]
 ```
 
 - [ ] **Step 4: Run policy validation**

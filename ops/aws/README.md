@@ -33,7 +33,7 @@ aws iam create-role \
 
 ## 3. 绑定最小 SSM 权限
 
-此内联策略只允许向 `i-0d3456ec595259c39` 使用 `AWS-RunShellScript`，以及读取命令状态。
+此内联策略只允许向 `i-0d3456ec595259c39` 使用 `AWS-RunShellScript`，以及读取该实例命令的结果。
 
 ```bash
 aws iam put-role-policy \
@@ -54,14 +54,35 @@ aws ssm describe-instance-information \
 
 ## 5. 发送无副作用的连通性验证
 
-下面命令只输出 `ssm-ready`，不修改服务器文件或服务：
+下面完整命令只输出 `ssm-ready`，不修改服务器文件或服务。它会捕获本次 `CommandId`，等待该实例上的同一命令完成，再读取并核验该命令的状态和标准输出：
 
 ```bash
-aws ssm send-command \
+command_id="$(
+  aws ssm send-command \
+    --region ap-northeast-1 \
+    --instance-ids i-0d3456ec595259c39 \
+    --document-name AWS-RunShellScript \
+    --parameters 'commands=["printf ssm-ready"]' \
+    --query 'Command.CommandId' \
+    --output text
+)"
+
+aws ssm wait command-executed \
   --region ap-northeast-1 \
-  --instance-ids i-0d3456ec595259c39 \
-  --document-name AWS-RunShellScript \
-  --parameters 'commands=["printf ssm-ready"]'
+  --command-id "$command_id" \
+  --instance-id i-0d3456ec595259c39
+
+invocation="$(
+  aws ssm get-command-invocation \
+    --region ap-northeast-1 \
+    --command-id "$command_id" \
+    --instance-id i-0d3456ec595259c39 \
+    --query '{Status:Status,StandardOutputContent:StandardOutputContent}' \
+    --output json
+)"
+
+[[ "$(jq -r '.Status' <<<"$invocation")" == "Success" ]]
+[[ "$(jq -r '.StandardOutputContent' <<<"$invocation")" == "ssm-ready" ]]
 ```
 
-记下返回的 `CommandId`，再用 AWS 控制台或 `aws ssm get-command-invocation` 确认其状态为 `Success`。这一步完成后，GitHub Actions 才可以用 OIDC 获得短期凭证并调用受限的 SSM 命令。
+两个断言均成立时，探针成功。这一步完成后，GitHub Actions 才可以用 OIDC 获得短期凭证并调用受限的 SSM 命令。
