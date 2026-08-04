@@ -12,7 +12,7 @@ try { require("fs").readFileSync(envFile, "utf-8").split("\n").forEach(line => {
 const fs = require("fs");
 const path = require("path");
 
-const DATA_FILE = path.join(__dirname, "..", "data", "staking-rewards.json");
+const DATA_FILE = path.join(process.env.PERP_DATA_DIR || path.join(__dirname, "..", "data"), "staking-rewards.json");
 
 async function fetchSkyStaking() {
   try {

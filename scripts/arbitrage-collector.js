@@ -8,7 +8,7 @@ const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
 
-const DATA_FILE = path.join(__dirname, "..", "data", "arbitrage-data.json");
+const DATA_FILE = path.join(process.env.PERP_DATA_DIR || path.join(__dirname, "..", "data"), "arbitrage-data.json");
 
 // ── ENA: KyberSwap + Etherscan ──
 const ENA_ADDRESS = "0x57e114B691Db790C35207b2e685D4a43181e6061";

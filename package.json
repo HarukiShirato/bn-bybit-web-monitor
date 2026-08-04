@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:deployment": "bash tests/test-deployment-assets-contract.sh && bash tests/test-deploy-production.sh && bash tests/test-migrate-production-layout.sh && bash tests/test-run-ssm-deployment.sh && bash tests/test-workflow-remote-command.sh && bash tests/test-deployment-assets.sh && bash tests/test-production-deployment-runbook.sh"
   },
   "dependencies": {
     "@coingecko/coingecko-typescript": "^2.2.0",
@@ -23,6 +24,7 @@
     "autoprefixer": "^10.4.16",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.4.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "yaml": "^2.9.0"
   }
 }
