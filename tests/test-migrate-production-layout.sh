@@ -111,6 +111,7 @@ NODE
     ;;
   startOrRestart)
     [[ "$2" == '--update-env' && "$#" == 2 ]] || exit 2
+    [[ "$(basename "$1")" == ecosystem.config.cjs ]] || exit 1
     [[ "$1" != "$CURRENT_CWD/ecosystem.config.cjs" || "${FAIL_PM2_START:-0}" != 1 ]] || exit 1
     node - "$PM2_STATE" "$1" "$CURRENT_CWD" <<'NODE'
 const fs = require('fs');
@@ -128,7 +129,9 @@ for (const replacement of config.apps) {
   }
   app.pm2_env.pm_exec_path = replacement.script;
   if (replacement.env) app.pm2_env.env = replacement.env;
-  app.pm2_env.pm_cwd = currentConfig ? current : replacement.cwd;
+  app.pm2_env.pm_cwd = currentConfig && process.env.PM2_CANONICALIZE_CWD === '1'
+    ? fs.realpathSync(current)
+    : (currentConfig ? current : replacement.cwd);
   app.pm2_env.status = replacement.name === 'funding-collector' && currentConfig && process.env.ERRORED_COLLECTOR === '1' ? 'errored' : 'online';
 }
 fs.writeFileSync(file, JSON.stringify(state));
@@ -263,6 +266,17 @@ NODE
 fixture="$(make_fixture)"
 run_migration "$fixture" env LOCAL_FAILS_BEFORE_SUCCESS=2
 [[ "$(grep -Fc 'http://127.0.0.1:3000/' "$fixture/curl.log")" == 3 ]] || fail 'cold migration did not poll local health until ready'
+rm -rf -- "$fixture"
+
+fixture="$(make_fixture)"
+run_migration "$fixture" env PM2_CANONICALIZE_CWD=1
+node - "$fixture/pm2-state.json" "$fixture/app/current" <<'NODE'
+const fs = require('fs');
+const [file, current] = process.argv.slice(2);
+const expected = fs.realpathSync(current);
+const apps = JSON.parse(fs.readFileSync(file)).apps.filter((app) => app.pm2_env.name !== 'unrelated-worker');
+if (apps.length !== 5 || apps.some((app) => app.pm2_env.pm_cwd !== expected || app.pm2_env.status !== 'online')) process.exit(1);
+NODE
 rm -rf -- "$fixture"
 
 fixture="$(make_fixture)"

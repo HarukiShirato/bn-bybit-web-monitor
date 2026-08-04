@@ -71,10 +71,11 @@ const [file, current, ...names] = process.argv.slice(2);
 const apps = JSON.parse(fs.readFileSync(file));
 const envOf = (app) => app.pm2_env ?? app;
 const nameOf = (app) => envOf(app).name;
+const expectedCwd = fs.realpathSync(current);
 for (const name of names) {
   const matches = apps.filter((app) => nameOf(app) === name);
   const env = matches.length === 1 ? envOf(matches[0]) : null;
-  if (!env || env.pm_cwd !== current || env.status !== 'online') process.exit(1);
+  if (!env || env.status !== 'online' || !env.pm_cwd || fs.realpathSync(env.pm_cwd) !== expectedCwd) process.exit(1);
 }
 NODE
 }
@@ -223,6 +224,7 @@ archive_legacy_audit() {
 
 original_dump_backup=""
 runtime_snapshot=""
+runtime_snapshot_dir=""
 jlist_before="$APP_ROOT/.pm2-targets-before.$$.json"
 jlist_after="$APP_ROOT/.pm2-targets-after.$$.json"
 dump_tmp="$PM2_HOME_DIR/.dump.pm2.migration.$$.tmp"
@@ -257,7 +259,8 @@ cleanup() {
       restore_original_dump || echo 'unable to restore the original PM2 dump' >&2
     fi
   fi
-  rm -f -- "$runtime_snapshot" "$jlist_before" "$jlist_after" "$dump_tmp"
+  rm -f -- "$jlist_before" "$jlist_after" "$dump_tmp"
+  [[ -z "$runtime_snapshot_dir" ]] || rm -rf -- "$runtime_snapshot_dir"
   if (( ! completed && current_created )) && [[ -L "$CURRENT" ]]; then rm -f -- "$CURRENT"; fi
   [[ -z "$original_dump_backup" ]] || rm -f -- "$original_dump_backup"
   exit "$status"
@@ -312,7 +315,8 @@ if [[ -e "$PM2_DUMP" ]]; then
   dump_existed=1; original_dump_backup="$(mktemp "$APP_ROOT/.pm2-original-dump.XXXXXX")"; cp -- "$PM2_DUMP" "$original_dump_backup"
 fi
 pm2 jlist >"$jlist_before"
-runtime_snapshot="$(mktemp "$APP_ROOT/.pm2-target-snapshot.XXXXXX")"
+runtime_snapshot_dir="$(mktemp -d "$APP_ROOT/.pm2-target-snapshot.XXXXXX")"
+runtime_snapshot="$runtime_snapshot_dir/ecosystem.config.cjs"
 build_target_snapshot "$jlist_before" "$runtime_snapshot"
 pm2_state_initialized=1
 
