@@ -25,24 +25,32 @@ shared/deploy-logs/       仅服务器保存的详细部署日志（0600）
 2. 在 GitHub Actions 中打开此次 `Deploy production` 工作流。`verify` 必须先完成 `npm ci`、`npm run build` 和 `npm run test:deployment`；随后 `deploy` 使用短期 OIDC 凭证发起 SSM 命令。
 3. 记录 Actions 输出中的 `SSM_SUBMITTED COMMAND_ID=... SHA=...`。这是排查部署的索引，不是密钥。
 
-Actions 日志与 SSM 原始输出的用途不同：Actions 固定输出状态字段 `SSM_SUBMITTED`、轮询中的 `SSM_STATUS` 和最终 `SSM_RESULT`，并从远程输出中仅筛出四个 `DEPLOY_*` 里程碑。它不会回显完整远程部署日志。若需要从本机核验该 SSM 调用，请只使用刚记录的命令 ID，并只检查 `Status=Success` 和这四个 `DEPLOY_*` 里程碑：
+Actions 日志与 SSM 原始输出的用途不同：Actions 固定输出状态字段 `SSM_SUBMITTED`、轮询中的 `SSM_STATUS` 和最终 `SSM_RESULT`，并从远程输出中仅筛出四个 `DEPLOY_*` 里程碑。它不会回显完整远程部署日志。若需要从本机核验该 SSM 调用，先从同一次 Actions 输出记录 `CommandId` 和完整的 40 位 `SHA`；下列命令只检查 `Status=Success` 与这四个 `DEPLOY_*` 里程碑，任一条件缺失会立刻失败：
 
 ```bash
-command_id='替换为 Actions 输出中的 CommandId'
-invocation="$(aws ssm get-command-invocation \
-  --region ap-northeast-1 \
-  --command-id "$command_id" \
-  --instance-id i-0d3456ec595259c39 \
-  --query '{Status:Status,StandardOutputContent:StandardOutputContent}' \
-  --output json)"
-[[ "$(jq -r '.Status' <<<"$invocation")" == 'Success' ]]
-jq -r '.StandardOutputContent // ""' <<<"$invocation" | grep -Ex 'DEPLOY_SHA=[0-9a-f]{40}' >/dev/null
-for milestone in \
-  'DEPLOY_PM2=online' \
-  'DEPLOY_LOCAL_HEALTH=ok' \
-  'DEPLOY_PUBLIC_HEALTH=ok'; do
-  jq -r '.StandardOutputContent // ""' <<<"$invocation" | grep -Fx "$milestone" >/dev/null
-done
+( set -Eeuo pipefail
+  command_id='替换为 Actions 输出中的 CommandId'
+  expected_sha='替换为同一次 Actions 输出中的精确 40 位 SHA'
+  [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
+
+  invocation="$(aws ssm get-command-invocation \
+    --region ap-northeast-1 \
+    --command-id "$command_id" \
+    --instance-id i-0d3456ec595259c39 \
+    --query '{Status:Status,StandardOutputContent:StandardOutputContent}' \
+    --output json)"
+  [[ "$(jq -r '.Status' <<<"$invocation")" == 'Success' ]]
+
+  deployment_output="$(jq -r '.StandardOutputContent // ""' <<<"$invocation")"
+  grep -Fx "DEPLOY_SHA=$expected_sha" <<<"$deployment_output" >/dev/null
+  for milestone in \
+    'DEPLOY_PM2=online' \
+    'DEPLOY_LOCAL_HEALTH=ok' \
+    'DEPLOY_PUBLIC_HEALTH=ok'; do
+    grep -Fx "$milestone" <<<"$deployment_output" >/dev/null
+  done
+  echo 'SSM invocation verified'
+)
 ```
 
 `DEPLOY_SHA` 用于将里程碑与本次提交对应；其余三项确认 PM2、本机健康检查和公网健康检查。`SSM_RESULT=success` 是 Actions 的最终状态字段，不是原始 SSM 输出的核验条件。命令状态不是 `Success` 或任一里程碑缺失时，不要重试未知的远程 shell；先查看 Actions 的固定状态字段，再按下面的服务器检查定位原因。
