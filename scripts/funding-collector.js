@@ -18,7 +18,8 @@ const BYBIT_API = 'https://api.bybit.com';
 
 /* ── Store ── */
 // asterOI 是快照（非时间序列）：{ SYMBOL: { qty, value, time } }
-let store = { binance: {}, bybit: {}, hyperliquid: {}, okx: {}, aster: {}, asterOI: {}, updatedAt: 0 };
+// oi 是各所的 OI 快照（USD）：{ binance: { SYMBOL: usd }, ... }，用来过滤僵尸合约
+let store = { binance: {}, bybit: {}, hyperliquid: {}, okx: {}, aster: {}, asterOI: {}, oi: {}, updatedAt: 0 };
 
 function loadStore() {
   try {
@@ -30,6 +31,7 @@ function loadStore() {
       store.okx = saved.okx || {};
       store.aster = saved.aster || {};
       store.asterOI = saved.asterOI || {};
+      store.oi = saved.oi || {};
       store.updatedAt = saved.updatedAt || 0;
       console.log(`[collector] Loaded: bn=${Object.keys(store.binance).length}, by=${Object.keys(store.bybit).length}, hl=${Object.keys(store.hyperliquid).length}, okx=${Object.keys(store.okx).length}, ast=${Object.keys(store.aster).length}`);
     }
@@ -78,6 +80,162 @@ function mergeAndTrim(existing, newRates) {
   return existing.filter(r => r.time >= cutoff);
 }
 
+/* ── OI 门槛 ──
+ * 持仓量低于 MIN_OI_USD 的合约一律不采，历史也从文件里清掉。
+ * 这些僵尸合约既撑大数据文件，又会在表上挂一个根本吃不到的资金费年化
+ * （几千美元 OI 的合约，报出来的 APR 没有任何可执行性）。
+ * OI 快照每轮更新一次，各所的采集都拿上一步的快照来过滤。 */
+const MIN_OI_USD = 100000;
+
+/** 该合约的 OI（USD）；返回 null 表示这轮没拿到它的 OI —— 此时一律不过滤，宁可多采 */
+function oiUsdOf(exchange, symbol) {
+  const m = store.oi && store.oi[exchange];
+  if (!m) return null;
+  const v = m[symbol];
+  return typeof v === 'number' && v > 0 ? v : (m[symbol] === 0 ? 0 : null);
+}
+
+/** OI 明确低于门槛才跳过；拿不到 OI 的按"不确定"处理，照采 */
+function belowOiFloor(exchange, symbol) {
+  const v = oiUsdOf(exchange, symbol);
+  return v !== null && v < MIN_OI_USD;
+}
+
+/** 把已经掉到门槛以下的合约从历史里清出去，返回清理条数 */
+function pruneByOi(exchange, storeKey) {
+  const bucket = store[storeKey];
+  if (!bucket || !store.oi || !store.oi[exchange]) return 0;
+  let n = 0;
+  for (const sym of Object.keys(bucket)) {
+    if (belowOiFloor(exchange, sym)) {
+      delete bucket[sym];
+      n++;
+    }
+  }
+  return n;
+}
+
+/* Binance 没有批量 OI 端点，只能逐 symbol 并发查（权重 1，25 并发实测全量约 15s）。
+ * openInterest 是币数量，乘 premiumIndex 的 markPrice 折成 USD。 */
+async function fetchBinanceOi() {
+  const marks = {};
+  try {
+    const res = await axios.get(`${BINANCE_FAPI}/fapi/v1/premiumIndex`, { timeout: 15000 });
+    for (const it of res.data || []) {
+      if (!it.symbol.endsWith('USDT')) continue;
+      const px = parseFloat(it.markPrice || '0');
+      if (px > 0) marks[it.symbol] = px;
+    }
+  } catch (e) {
+    console.error('[collector] Binance markPrice failed:', e.message);
+    return null;
+  }
+
+  const out = {};
+  const symbols = Object.keys(marks);
+  const BATCH = 25;
+  for (let i = 0; i < symbols.length; i += BATCH) {
+    await Promise.all(symbols.slice(i, i + BATCH).map(async sym => {
+      try {
+        const r = await axios.get(`${BINANCE_FAPI}/fapi/v1/openInterest`, {
+          params: { symbol: sym }, timeout: 10000,
+        });
+        const qty = parseFloat(r.data?.openInterest || '0');
+        if (qty > 0) out[sym] = qty * marks[sym];
+      } catch { /* 单个失败就当没数据，belowOiFloor 会放行 */ }
+    }));
+    await sleep(120);
+  }
+  return out;
+}
+
+async function fetchBybitOi() {
+  try {
+    const res = await axios.get(`${BYBIT_API}/v5/market/tickers`, {
+      params: { category: 'linear' }, timeout: 15000,
+    });
+    const out = {};
+    for (const it of res.data?.result?.list || []) {
+      if (!it.symbol.endsWith('USDT')) continue;
+      const v = parseFloat(it.openInterestValue || '0');   // 已经是 USD
+      if (v > 0) out[it.symbol] = v;
+    }
+    return out;
+  } catch (e) {
+    console.error('[collector] Bybit OI failed:', e.message);
+    return null;
+  }
+}
+
+async function fetchOkxOi() {
+  try {
+    const res = await axios.get('https://www.okx.com/api/v5/public/open-interest', {
+      params: { instType: 'SWAP' }, timeout: 15000,
+    });
+    const out = {};
+    for (const it of res.data?.data || []) {
+      if (!it.instId.endsWith('-USDT-SWAP')) continue;
+      const v = parseFloat(it.oiUsd || '0');
+      if (v > 0) out[it.instId.split('-')[0] + 'USDT'] = v;
+    }
+    return out;
+  } catch (e) {
+    console.error('[collector] OKX OI failed:', e.message);
+    return null;
+  }
+}
+
+/** HL 主 dex 的 OI。builder dex 的在 hlBuilderDexCoins 里顺带算，那边本来就要拉 ctx */
+async function fetchHlMainOi() {
+  try {
+    const res = await hlPost({ type: 'metaAndAssetCtxs' });
+    const meta = res.data?.[0];
+    const ctxs = res.data?.[1];
+    if (!meta?.universe || !Array.isArray(ctxs)) return null;
+    const out = {};
+    for (let i = 0; i < meta.universe.length; i++) {
+      const m = meta.universe[i];
+      const ctx = ctxs[i];
+      if (!m || m.isDelisted || !ctx) continue;
+      const v = parseFloat(ctx.openInterest || '0') * parseFloat(ctx.markPx || '0');
+      if (v > 0) out[hlNormalize(m.name) + 'USDT'] = v;
+    }
+    return out;
+  } catch (e) {
+    console.error('[collector] Hyperliquid OI failed:', e.message);
+    return null;
+  }
+}
+
+/** 每轮开头刷新 OI 快照。某个所拉失败就保留上一轮的，绝不清空（清空会让全所放行/误删） */
+async function collectOiSnapshot() {
+  const [bn, by, okx, hl] = await Promise.all([
+    fetchBinanceOi(), fetchBybitOi(), fetchOkxOi(), fetchHlMainOi(),
+  ]);
+  if (!store.oi) store.oi = {};
+  if (bn) store.oi.binance = bn;
+  if (by) store.oi.bybit = by;
+  if (okx) store.oi.okx = okx;
+  if (hl) store.oi.hyperliquid = { ...(store.oi.hyperliquid || {}), ...hl };
+
+  // Aster 的 OI 在 collectAster 末尾按 symbol 逐个采，这里直接复用上一轮的快照
+  if (store.asterOI && Object.keys(store.asterOI).length) {
+    const ast = {};
+    for (const [sym, o] of Object.entries(store.asterOI)) {
+      const v = o && typeof o.value === 'number' ? o.value : 0;
+      if (v > 0) ast[sym] = v;
+    }
+    store.oi.aster = ast;
+  }
+
+  const counts = Object.entries(store.oi)
+    .map(([k, m]) => k + '=' + Object.keys(m || {}).length).join(' ');
+  const above = Object.entries(store.oi)
+    .map(([k, m]) => k + '=' + Object.values(m || {}).filter(v => v >= MIN_OI_USD).length).join(' ');
+  console.log('[collector] OI snapshot: ' + counts);
+  console.log('[collector] OI >= $' + (MIN_OI_USD / 1000) + 'k: ' + above);
+}
+
 /* ── Binance ── */
 async function getBinanceSymbols() {
   const res = await axios.get(`${BINANCE_FAPI}/fapi/v1/premiumIndex`, { timeout: 15000 });
@@ -121,6 +279,7 @@ async function collectBinance() {
    * 换成跟 Aster 一样的到点即查，漏掉的下一轮自己就补回来了。 */
   const now = Date.now();
   const stale = allSymbols.filter(sym => {
+    if (belowOiFloor('binance', sym)) return false;
     const existing = store.binance[sym];
     const lastTime = getLatestTime(existing);
     if (lastTime === 0) return true;                    // 首次，回补 30 天
@@ -194,6 +353,7 @@ async function collectBybit() {
    * Bybit 的结算间隔是 instruments-info 自报的，比推断可靠，直接拿来定轮询频率。 */
   const now = Date.now();
   const due = symbolsData.filter(({ symbol, intervalHours }) => {
+    if (belowOiFloor('bybit', symbol)) return false;
     const entry = store.bybit[symbol];
     const rates = entry && entry.rates;
     const lastTime = getLatestTime(rates);
@@ -307,7 +467,10 @@ async function hlBuilderDexCoins() {
         const ctx = ctxs[i];
         if (!m || m.isDelisted || !ctx) continue;
         const oiValue = parseFloat(ctx.openInterest || '0') * parseFloat(ctx.markPx || '0');
-        if (!(oiValue > 0)) continue;
+        if (!(oiValue >= MIN_OI_USD)) continue;
+        // 顺手把 builder dex 的 OI 记进快照，prune 才认得 xyz:NVDA 这类 key
+        if (!store.oi.hyperliquid) store.oi.hyperliquid = {};
+        store.oi.hyperliquid[m.name] = oiValue;
         out.push({ coin: m.name, storeKey: m.name });
       }
     } catch (e) {
@@ -329,6 +492,7 @@ async function collectHyperliquid() {
   const now = Date.now();
   const STALE_MS = 50 * 60 * 1000;
   const staleCoins = coins.filter(({ storeKey }) => {
+    if (belowOiFloor('hyperliquid', storeKey)) return false;
     const lastTime = getLatestTime(store.hyperliquid[storeKey]);
     return lastTime === 0 || (now - lastTime) > STALE_MS;
   });
@@ -389,7 +553,8 @@ async function collectOkx() {
           instId: item.instId,
           symbol: parts[0] + parts[1],  // BTC-USDT-SWAP -> BTCUSDT
         };
-      });
+      })
+      .filter(({ symbol }) => !belowOiFloor('okx', symbol));
   } catch (e) {
     console.error('[collector] OKX instruments failed:', e.message);
     return;
@@ -484,7 +649,11 @@ async function collectAster() {
     console.error('[collector] Aster symbols failed:', e.message);
     return;
   }
-  console.log(`[collector] Aster: ${active.length} active symbols (vol >= ${ASTER_MIN_VOL_USD})`);
+  // vol 门槛是躲 WAF 用的第一道筛，OI 门槛再筛掉持仓量太小的（用上一轮的 asterOI 快照）
+  const beforeOi = active.length;
+  active = active.filter(({ symbol }) => !belowOiFloor('aster', symbol));
+  console.log(`[collector] Aster: ${active.length} symbols (vol >= ${ASTER_MIN_VOL_USD}, `
+    + `OI >= ${MIN_OI_USD}; OI 门槛筛掉 ${beforeOi - active.length})`);
 
   const now = Date.now();
 
@@ -582,7 +751,21 @@ async function collectAll() {
   const start = Date.now();
   console.log(`[collector] Starting collection at ${new Date().toISOString()}`);
 
+  // 先刷 OI 快照，各所的采集都靠它跳过僵尸合约
+  await collectOiSnapshot();
+
   await Promise.all([collectBinance(), collectBybit(), collectHyperliquid(), collectOkx(), collectAster()]);
+
+  // 掉到门槛以下的，历史一并清掉：留着只会在表上挂一个吃不到的年化
+  const pruned = [
+    ['binance', 'binance'], ['bybit', 'bybit'], ['okx', 'okx'],
+    ['hyperliquid', 'hyperliquid'], ['aster', 'aster'],
+  ].map(([ex, key]) => [ex, pruneByOi(ex, key)]).filter(([, n]) => n > 0);
+  if (pruned.length) {
+    console.log('[collector] Pruned below $' + (MIN_OI_USD / 1000) + 'k OI: '
+      + pruned.map(([ex, n]) => ex + '=' + n).join(' '));
+  }
+
   saveStore();
 
   const elapsed = Math.round((Date.now() - start) / 1000);
