@@ -20,15 +20,41 @@ mkdir -p "$RELEASES" "$SHARED"
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo "deployment already running" >&2; exit 75; }
 
-resolve_link() {
-  local link="$1"
+resolve_path() {
+  local path="$1"
   local target
+  local parent
 
-  target="$(readlink -f "$link" 2>/dev/null || true)"
-  if [[ -z "$target" ]]; then
-    target="$(readlink "$link" 2>/dev/null || true)"
+  target="$(readlink -f "$path" 2>/dev/null || true)"
+  if [[ -n "$target" ]]; then
+    printf '%s\n' "$target"
+    return 0
   fi
-  printf '%s\n' "$target"
+  if [[ -L "$path" ]]; then
+    target="$(readlink "$path")"
+    if [[ "$target" != /* ]]; then
+      target="$(dirname "$path")/$target"
+    fi
+    resolve_path "$target"
+    return 0
+  fi
+  if [[ -e "$path" ]]; then
+    parent="$(cd -P "$(dirname "$path")" && pwd -P)"
+    printf '%s/%s\n' "$parent" "$(basename "$path")"
+    return 0
+  fi
+  return 1
+}
+
+successful_release_candidate() {
+  local candidate="$1"
+  local candidate_real
+
+  candidate_real="$(resolve_path "$candidate" 2>/dev/null || true)"
+  [[ -n "$candidate_real" && -d "$candidate_real" ]] || return 1
+  [[ "$(dirname "$candidate_real")" == "$RELEASES_REAL" ]] || return 1
+  [[ -f "$candidate_real/.deployment-success.json" ]] || return 1
+  printf '%s\n' "$candidate_real"
 }
 
 switch_link() {
@@ -47,15 +73,32 @@ switch_link() {
 
 release="$RELEASES/$SHA"
 tmp="$RELEASES/.${SHA}.tmp"
-old="$(resolve_link "$CURRENT")"
+readonly RELEASES_REAL="$(resolve_path "$RELEASES")"
+old="$(resolve_path "$CURRENT" 2>/dev/null || true)"
+original_previous="$(resolve_path "$PREVIOUS" 2>/dev/null || true)"
 switched=0
 release_published=0
 completed=0
+
+restore_original_previous() {
+  if [[ -n "$original_previous" && -d "$original_previous" ]]; then
+    switch_link "$original_previous" "$PREVIOUS"
+  elif [[ -L "$PREVIOUS" ]]; then
+    rm -f -- "$PREVIOUS"
+  elif [[ ! -e "$PREVIOUS" ]]; then
+    return 0
+  else
+    echo "refusing to replace non-symlink previous release: $PREVIOUS" >&2
+    return 1
+  fi
+}
 
 cleanup_failed_deployment() {
   local code=$?
   local rollback_ok=1
   local current_after_rollback
+  local current_before_removal
+  local release_real
   local remove_failed_release=0
 
   trap - EXIT
@@ -67,18 +110,17 @@ cleanup_failed_deployment() {
         echo "deployment failed; restoring previous release" >&2
         if ! switch_link "$old" "$CURRENT"; then
           rollback_ok=0
-        else
-          current_after_rollback="$(resolve_link "$CURRENT")"
-          if [[ "$current_after_rollback" == "$old" && -d "$current_after_rollback" ]]; then
-            remove_failed_release=1
-            if ! (cd "$CURRENT" && pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env); then
-              rollback_ok=0
-            elif ! curl --fail --silent --show-error --max-time 2 "$LOCAL_HEALTH_URL" >/dev/null; then
-              rollback_ok=0
-            fi
-          else
+        fi
+        current_after_rollback="$(resolve_path "$CURRENT" 2>/dev/null || true)"
+        if [[ "$current_after_rollback" == "$old" && -d "$current_after_rollback" ]]; then
+          remove_failed_release=1
+          if ! (cd "$CURRENT" && pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env); then
+            rollback_ok=0
+          elif ! curl --fail --silent --show-error --max-time 2 "$LOCAL_HEALTH_URL" >/dev/null; then
             rollback_ok=0
           fi
+        else
+          rollback_ok=0
         fi
         if (( ! remove_failed_release )); then
           echo "rollback could not restore current; retaining failed release for manual inspection" >&2
@@ -92,7 +134,13 @@ cleanup_failed_deployment() {
     fi
     (( rollback_ok )) || echo "rollback recovery failed" >&2
     if (( remove_failed_release )); then
-      rm -rf -- "$release"
+      current_before_removal="$(resolve_path "$CURRENT" 2>/dev/null || true)"
+      release_real="$(resolve_path "$release" 2>/dev/null || true)"
+      if [[ -n "$release_real" && "$current_before_removal" != "$release_real" ]]; then
+        rm -rf -- "$release_real"
+      else
+        echo "current still points to failed release; retaining it for manual inspection" >&2
+      fi
     fi
   fi
   exit "$code"
@@ -154,8 +202,22 @@ mv "$tmp" "$release" || fail_deployment 'release publish failed'
 release_published=1
 
 [[ -z "$old" || -d "$old" ]] || fail_deployment "current release target is missing: $old"
-[[ -z "$old" ]] || switch_link "$old" "$PREVIOUS" || fail_deployment 'previous release link switch failed'
-switch_link "$release" "$CURRENT" || fail_deployment 'current release link switch failed'
+previous_changed=0
+if [[ -n "$old" ]]; then
+  switch_link "$old" "$PREVIOUS" || fail_deployment 'previous release link switch failed'
+  previous_changed=1
+fi
+if ! switch_link "$release" "$CURRENT"; then
+  forward_current="$(resolve_path "$CURRENT" 2>/dev/null || true)"
+  forward_release="$(resolve_path "$release" 2>/dev/null || true)"
+  if [[ -n "$forward_release" && "$forward_current" == "$forward_release" ]]; then
+    switched=1
+  fi
+  if (( previous_changed )) && ! restore_original_previous; then
+    echo "failed to restore original previous release" >&2
+  fi
+  fail_deployment 'current release link switch failed'
+fi
 switched=1
 
 cd "$CURRENT"
@@ -168,9 +230,11 @@ printf '{"sha":"%s","deployed_at":"%s"}\n' \
 completed=1
 switched=0
 
-current_target="$(resolve_link "$CURRENT")"
-previous_target="$(resolve_link "$PREVIOUS")"
+current_target="$(resolve_path "$CURRENT" 2>/dev/null || true)"
+previous_target="$(resolve_path "$PREVIOUS" 2>/dev/null || true)"
 while IFS= read -r candidate; do
+  candidate="$(successful_release_candidate "$candidate" || true)"
+  [[ -n "$candidate" ]] || continue
   [[ "$candidate" == "$current_target" || "$candidate" == "$previous_target" ]] && continue
   rm -rf -- "$candidate"
 done < <(find "$RELEASES" -mindepth 2 -maxdepth 2 -type f -name '.deployment-success.json' -printf '%T@ %h\n' | sort -nr | tail -n +6 | cut -d' ' -f2-)

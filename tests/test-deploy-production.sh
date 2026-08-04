@@ -124,9 +124,12 @@ if [[ "${MV_FAIL_AT:-0}" == "$calls" ]]; then
 fi
 if [[ "$1" == '-Tf' ]]; then
   rm -f -- "$3"
-  exec /bin/mv "$2" "$3"
+  /bin/mv "$2" "$3"
+  [[ "${MV_MOVE_THEN_FAIL_AT:-0}" != "$calls" ]] || exit 1
+  exit 0
 fi
-exec /bin/mv "$@"
+/bin/mv "$@"
+[[ "${MV_MOVE_THEN_FAIL_AT:-0}" != "$calls" ]] || exit 1
 EOF
   chmod 0755 "$fixture/bin"/*
   printf '%s\n' "$fixture"
@@ -256,6 +259,46 @@ assert_link "$fixture/app/previous" "$old"
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
+old="$fixture/app/releases/old"
+mkdir -p "$old"
+ln -s "$old" "$fixture/app/current"
+if run_deploy "$fixture" env PUBLIC_FAIL=1 MV_MOVE_THEN_FAIL_AT=4; then
+  fail 'rollback move-then-fail unexpectedly succeeded'
+fi
+assert_link "$fixture/app/current" "$old"
+assert_link "$fixture/app/previous" "$old"
+assert_absent "$fixture/app/releases/$sha"
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+old="$fixture/app/releases/old"
+original_previous="$fixture/app/releases/original-previous"
+mkdir -p "$old" "$original_previous"
+ln -s "$old" "$fixture/app/current"
+ln -s "$original_previous" "$fixture/app/previous"
+if run_deploy "$fixture" env MV_FAIL_AT=3; then
+  fail 'forward current link-switch failure unexpectedly succeeded'
+fi
+assert_link "$fixture/app/current" "$old"
+assert_link "$fixture/app/previous" "$original_previous"
+assert_absent "$fixture/app/releases/$sha"
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+old="$fixture/app/releases/old"
+original_previous="$fixture/app/releases/original-previous"
+mkdir -p "$old" "$original_previous"
+ln -s "$old" "$fixture/app/current"
+ln -s "$original_previous" "$fixture/app/previous"
+if run_deploy "$fixture" env MV_MOVE_THEN_FAIL_AT=3; then
+  fail 'forward move-then-fail unexpectedly succeeded'
+fi
+assert_link "$fixture/app/current" "$old"
+assert_link "$fixture/app/previous" "$original_previous"
+assert_absent "$fixture/app/releases/$sha"
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
 if run_deploy "$fixture" env PUBLIC_FAIL=1; then
   fail 'first-deployment public health failure unexpectedly succeeded'
 fi
@@ -265,27 +308,32 @@ assert_absent "$fixture/app/previous"
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
-for release in old keep1 keep2 keep3 remove1 remove2 unverified; do
+for release in old keep1 keep2 keep3 remove1 remove2 remove3 unverified; do
   mkdir -p "$fixture/app/releases/$release"
 done
-for release in old keep1 keep2 keep3 remove1 remove2; do
+for release in old keep1 keep2 keep3 remove1 remove2 remove3; do
   write_success_marker "$fixture/app/releases/$release" "$release"
 done
+mkdir -p "$fixture/app/shared/external-success"
+write_success_marker "$fixture/app/shared/external-success" 'external'
 ln -s "$fixture/app/releases/old" "$fixture/app/current"
-find_output="8 $fixture/app/releases/$sha"$'\n'
-find_output+="7 $fixture/app/releases/keep1"$'\n'
-find_output+="6 $fixture/app/releases/keep2"$'\n'
-find_output+="5 $fixture/app/releases/keep3"$'\n'
-find_output+="4 $fixture/app/releases/old"$'\n'
-find_output+="2 $fixture/app/releases/remove1"$'\n'
-find_output+="1 $fixture/app/releases/remove2"
+find_output="9 $fixture/app/releases/keep1"$'\n'
+find_output+="8 $fixture/app/releases/keep2"$'\n'
+find_output+="7 $fixture/app/releases/keep3"$'\n'
+find_output+="6 $fixture/app/releases/remove1"$'\n'
+find_output+="5 $fixture/app/releases/remove2"$'\n'
+find_output+="4 $fixture/app/releases/remove3"$'\n'
+find_output+="3 $fixture/app/releases/$sha"$'\n'
+find_output+="2 $fixture/app/releases/old"$'\n'
+find_output+="1 $fixture/app/shared/external-success"
 run_deploy "$fixture" env FIND_OUTPUT="$find_output"
 assert_link "$fixture/app/current" "$fixture/app/releases/$sha"
 assert_link "$fixture/app/previous" "$fixture/app/releases/old"
 [[ -d "$fixture/app/releases/old" ]] || fail 'cleanup deleted previous release'
 [[ -d "$fixture/app/releases/$sha" ]] || fail 'cleanup deleted current release'
-[[ ! -d "$fixture/app/releases/remove1" && ! -d "$fixture/app/releases/remove2" ]] || fail 'cleanup did not remove old successful releases'
+[[ ! -d "$fixture/app/releases/remove3" ]] || fail 'cleanup did not remove old successful releases'
 [[ -d "$fixture/app/releases/unverified" ]] || fail 'cleanup deleted an unverified release'
+[[ -d "$fixture/app/shared/external-success" ]] || fail 'cleanup deleted a successful marker outside releases'
 grep -Fq -- "-name .deployment-success.json" "$fixture/find-arguments.log" || fail 'cleanup did not select successful-release markers'
 rm -rf "$fixture"
 
