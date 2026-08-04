@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:deployment": "bash tests/test-deployment-assets.sh"
   },
   "dependencies": {
     "@coingecko/coingecko-typescript": "^2.2.0",
