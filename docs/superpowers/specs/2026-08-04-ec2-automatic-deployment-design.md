@@ -1,5 +1,7 @@
 # Perpetual Dashboard EC2 自动部署设计
 
+> **已接受的信任模型：** 能合并或直接推送 `master` 的维护者（目前仅本人/老板）等同于生产发布者。发布使用通用 `AWS-RunShellScript`；生产发布者因此可以在目标 EC2 执行通用 shell，并可能访问服务器进程可见的环境。本设计依赖 `master` 权限治理，不宣称部署角色与服务器环境之间存在技术隔离。
+
 **日期：** 2026-08-04  
 **状态：** 待用户书面复核  
 **目标仓库：** `HarukiShirato/real-time-monitoring-for-perpetual-contracts`  
@@ -19,7 +21,7 @@
 - 新版本构建失败时，当前线上版本继续运行；
 - 切换后健康检查失败时，自动恢复到上一个成功版本；
 - 同一时间最多运行一个生产部署；
-- 部署权限只覆盖这个仓库、`master` 分支、这台 EC2 和指定 SSM 文档；
+- OIDC 信任只覆盖这个仓库的 `master`，SSM 调用只指向这台 EC2；所用文档是通用 `AWS-RunShellScript`；
 - 不读取或修改交易密钥、账户、持仓、订单及其他交易服务。
 
 本项目是只读监控网站。本次不修改页面功能、采集算法、依赖版本或交易相关系统。
@@ -109,7 +111,7 @@ concurrency:
 1. `verify` job 仅有 `contents: read`，checkout 后执行依赖安装、生产构建和测试；
 2. `deploy` job 必须等待 `verify`，才取得 `id-token: write` 并通过 OIDC 承担专用 AWS Role；
 3. 所有 GitHub Action 固定到完整 commit SHA；升级时人工审阅上游 release 与 commit，再同步更新 pin 和测试；
-4. 使用 SSM `SendCommand` 将完整 commit SHA 发送给目标 EC2；
+4. 使用 SSM `SendCommand` 将完整 commit SHA 和发布命令发送给目标 EC2；
 5. SSM 同时设置 delivery `timeout-seconds` 和 RunShellScript `executionTimeout`，以绝对 deadline 轮询；超时或中断时取消该 command，清理阶段只短轮询；
 6. EC2 将 Git/npm/build 明细写入权限 0600 的本地日志；Actions 仅白名单输出固定 SHA、PM2 和健康检查里程碑，绝不转发原始 stdout/stderr；
 7. 任何一步失败，GitHub Actions 以失败结束并保留日志。
@@ -130,9 +132,9 @@ Runner 成功而生产失败。
 
 权限策略只允许：
 
-- 对指定 EC2 实例调用指定 SSM document 的 `ssm:SendCommand`；
+- 对指定 EC2 实例调用通用 `AWS-RunShellScript` 的 `ssm:SendCommand`；
 - 查询该次命令结果所需的 `ssm:GetCommandInvocation`；
-- 不允许访问 Secrets Manager、交易资源、其他实例或任意 shell 目标。
+- IAM 策略不授予 Secrets Manager、交易资源或其他实例权限；但目标实例上的通用 shell 仍继承 `ec2-user` 与服务器运行环境可访问的能力。
 
 EC2 实例 Role 只补充成为 SSM Managed Node 所需的最小权限。不得把 GitHub 部署权限
 合并进当前 `Quant-Bot-Secrets-Role` 的业务权限范围。

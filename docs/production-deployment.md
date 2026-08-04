@@ -1,5 +1,7 @@
 # 生产部署运行手册
 
+> **已接受的信任模型：** 能合并或直接推送 GitHub `master` 的维护者（目前仅本人/老板）等同于生产发布者。部署角色使用通用 `AWS-RunShellScript`，因此生产发布者能够在目标服务器执行通用 shell，并可能接触该服务器进程可访问的环境。本方案不宣称通过 IAM 把发布者与服务器环境隔离；安全边界是严格控制 `master` 写权限与审查流程。
+
 本手册适用于 `data.dvcapital.xyz` 的永续合约仪表盘。生产部署由 GitHub Actions 通过 AWS Systems Manager（SSM，AWS 用来在受管服务器上执行命令的服务）完成；不要以 SSH 或 SSM 直接修改生产代码。
 
 ## 不可变规则与目录
@@ -18,6 +20,22 @@ shared/deploy-logs/       仅服务器保存的详细部署日志（0600）
 ```
 
 每次发布将 `shared/.env` 和 `shared/data` 链接到新 release；它们不会进入 Git，也不能靠替换 release 恢复。`current` 像舞台上正在使用的剧本，`previous` 是上一版剧本；`shared/` 则像所有剧本共用的道具间。切换剧本不会替换道具，因此排障时要把“代码版本”和“环境变量/数据”分开判断。这个比喻不表示数据可随意修改：运行时数据仍应按其所属业务流程维护。
+
+## 首次迁移（仅执行一次）
+
+首次建立新目录时不存在 `current`，因此按“先构建、再迁移、再验证”执行，避免迁移脚本反过来依赖一个尚未存在的 release。以下命令全部以 `ec2-user` 执行，`SHA` 必须是已审查并合并到 `master` 的完整 40 位提交：
+
+```bash
+set -Eeuo pipefail
+SHA='替换为 master 上的完整 40 位 SHA'
+APP_ROOT=/home/ec2-user/apps/perp-dashboard
+deploy_script="$APP_ROOT/shared/bin/deploy-production-$SHA.sh"
+"$deploy_script" --prepare-only "$SHA"
+PREPARED_SHA="$SHA" "$APP_ROOT/releases/$SHA/scripts/migrate-production-layout.sh"
+"$deploy_script" "$SHA"
+```
+
+第一步只完成 `npm ci`、构建和 prepared marker，不切换 `current`、不触碰 PM2，也不会把生产 `.env` 暴露给构建；第二步复制旧目录的 `.env`/数据、建立 `current` 并整体切换五个 PM2 进程；第三步是同 SHA 幂等验证。成功标志是第三步退出码为 0，且本机与公网健康检查均通过。迁移 marker 存在后，后续只走正常 GitHub Actions 发布。
 
 ## 正常发布与验收
 
@@ -76,7 +94,7 @@ pm2 describe perp-dashboard
 readlink -f "$APP_ROOT/current/ecosystem.config.cjs"
 ```
 
-详细部署日志在服务器本地：`$APP_ROOT/shared/deploy-logs/<SHA>.log`。该目录权限为 `0700`，日志文件权限为 `0600`；不要把日志整体复制到 GitHub Actions、工单或聊天中，因为依赖安装或运行时输出可能包含不应扩散的上下文。优先用 SSM/Actions 的里程碑和错误状态沟通，必要时由有服务器权限的人员在受控会话中最小范围查看对应 SHA 的日志。
+详细部署日志在服务器本地：`$APP_ROOT/shared/deploy-logs/<SHA>-<UTC 时间>-<PID>.log`。该目录权限为 `0700`，日志文件权限为 `0600`；不要把日志整体复制到 GitHub Actions、工单或聊天中，因为依赖安装或运行时输出可能包含不应扩散的上下文。优先用 SSM/Actions 的里程碑和错误状态沟通，必要时由有服务器权限的人员在受控会话中最小范围查看对应 SHA 的日志。
 
 ## 旧目录审计
 
@@ -94,7 +112,7 @@ sha256sum --check "$APP_ROOT/legacy-code-untracked-20260804.tar.sha256"
 
 ## 紧急人工回退
 
-仅当已确认当前版本导致服务不可用，且 `previous` 指向已成功发布的 release 时执行。此操作在 EC2 上只切换符号链接并**先只重载仪表盘**，不会改动 `shared/.env` 或 `shared/data`。请以 `ec2-user` 在受控 SSM 会话执行：
+仅当已确认当前版本导致服务不可用，且 `previous` 指向已成功发布的 release 时执行。此操作在 EC2 上切换符号链接，并把仪表盘与四个采集器作为同一个发布单元切回，不会改动 `shared/.env` 或 `shared/data`。请以 `ec2-user` 在受控 SSM 会话执行：
 
 ```bash
 set -Eeuo pipefail
@@ -109,8 +127,13 @@ next_link="$APP_ROOT/current.rollback.$$"
 ln -s "$target" "$next_link"
 mv -Tf "$next_link" "$APP_ROOT/current"
 cd "$APP_ROOT/current"
-pm2 reload ecosystem.config.cjs --only perp-dashboard --update-env
-curl --fail --silent --show-error --max-time 2 http://127.0.0.1:3000/ >/dev/null
+pm2 stop funding-collector arbitrage-collector staking-collector positions-collector
+pm2 startOrRestart ecosystem.config.cjs --update-env
+deadline=$(( $(date +%s) + 57 ))
+until curl --fail --silent --show-error --max-time 2 http://127.0.0.1:3000/ >/dev/null; do
+  (( $(date +%s) < deadline )) || { echo 'local rollback health check failed' >&2; exit 1; }
+  sleep 3
+done
 curl --fail --silent --show-error --max-time 15 https://data.dvcapital.xyz/ >/dev/null
 printf 'rollback current=%s\n' "$(readlink -f "$APP_ROOT/current")"
 ```
@@ -119,6 +142,6 @@ printf 'rollback current=%s\n' "$(readlink -f "$APP_ROOT/current")"
 
 ## 权限与日志边界
 
-GitHub 的部署角色仅应具备向实例 `i-0d3456ec595259c39` 执行和查询 SSM 命令的最小权限；角色信任关系仅限仓库 `HarukiShirato/real-time-monitoring-for-perpetual-contracts` 的 `master`。IAM、OIDC Provider、SSM 托管节点的建立和只读连通性验证，请使用 [AWS 部署角色设置](../ops/aws/README.md)。
+GitHub 的部署角色只允许由仓库 `master` 承担，并只向实例 `i-0d3456ec595259c39` 使用 SSM；但所用文档是通用 `AWS-RunShellScript`，所以这不是“不能执行任意 shell”的隔离边界。IAM、OIDC Provider、SSM 托管节点的建立和只读连通性验证，请使用 [AWS 部署角色设置](../ops/aws/README.md)。
 
 不要把 AWS 长期访问密钥、OIDC 令牌、`.env`、运行时数据或完整服务器日志写入仓库、Actions 输出、issue 或聊天。Actions 会掩码其短期凭证，并固定输出 `SSM_SUBMITTED`、`SSM_STATUS`、`SSM_RESULT` 状态字段及四个 `DEPLOY_*` 里程碑，不回显完整远程日志；服务器详细日志留在 `shared/deploy-logs/`。需要扩大 AWS 权限、读取密钥或导出日志时，应走单独的最小权限审批，不要为排障临时扩大 GitHub 部署角色。

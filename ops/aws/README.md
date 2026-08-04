@@ -1,5 +1,7 @@
 # GitHub OIDC 部署角色设置
 
+> **已接受的信任模型：** 能写入 `master` 的维护者（目前仅本人/老板）就是生产发布者。该角色可在目标实例调用通用 `AWS-RunShellScript`，因此不要把它描述为“无法执行通用 shell”或“无法接触服务器环境”；这里限制的是谁能发布、向哪台实例发布，而不是把发布者与实例环境隔离。
+
 以下命令仅供具备 AWS IAM 管理权限的人工操作员执行；本仓库的自动化不会创建、修改或删除 AWS 资源。请在仓库根目录执行，并确认当前 AWS CLI 身份属于账户 `890742583014`。
 
 工作流中的 `actions/checkout`、`actions/setup-node` 与 `aws-actions/configure-aws-credentials` 均固定到完整 commit SHA；升级时必须人工审阅官方 release 对应 commit，再同时更新 workflow 与契约测试，不能改回可变 tag。
