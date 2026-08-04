@@ -4,7 +4,7 @@
 
 ## 不可变规则与目录
 
-GitHub `master` 是唯一的生产代码来源。只有合并到 `master` 的 commit 才会触发发布；本地工作树和 EC2 上的代码改动不得自动合并、提交或作为后续部署的来源。需要修复时，请在 GitHub 工作流中完成审查并合并到 `master`，让 Actions 发布该 commit。
+GitHub `master` 是唯一的生产代码来源。对 `master` 的任何 push 都会触发发布：PR 合并会触发，直接 push 也会触发。正常协作必须先经 PR 审查再合并；直接 push 仅说明其同样会被自动部署，并不替代审查流程。本地工作树和 EC2 上的代码改动不得自动合并、提交或作为后续部署的来源。需要修复时，请在受控开发环境完成审查并合并到 `master`，让 Actions 发布该 commit。
 
 EC2 的应用根目录是 `/home/ec2-user/apps/perp-dashboard`：
 
@@ -21,23 +21,31 @@ shared/deploy-logs/       仅服务器保存的详细部署日志（0600）
 
 ## 正常发布与验收
 
-1. 将已审查的代码合并到 GitHub `master`。不要在 EC2 检出分支、`git pull`、编辑文件或手动运行发布脚本来替代该流程。
+1. 将已审查的代码经 PR 合并到 GitHub `master`。任何直接 push 也会自动部署，因此不得用它绕过审查。不要在 EC2 检出分支、`git pull`、编辑文件或手动运行发布脚本来替代该流程。
 2. 在 GitHub Actions 中打开此次 `Deploy production` 工作流。`verify` 必须先完成 `npm ci`、`npm run build` 和 `npm run test:deployment`；随后 `deploy` 使用短期 OIDC 凭证发起 SSM 命令。
 3. 记录 Actions 输出中的 `SSM_SUBMITTED COMMAND_ID=... SHA=...`。这是排查部署的索引，不是密钥。
 
-若需要从本机检查该 SSM 调用，请只使用刚记录的命令 ID：
+Actions 日志与 SSM 原始输出的用途不同：Actions 固定输出状态字段 `SSM_SUBMITTED`、轮询中的 `SSM_STATUS` 和最终 `SSM_RESULT`，并从远程输出中仅筛出四个 `DEPLOY_*` 里程碑。它不会回显完整远程部署日志。若需要从本机核验该 SSM 调用，请只使用刚记录的命令 ID，并只检查 `Status=Success` 和这四个 `DEPLOY_*` 里程碑：
 
 ```bash
 command_id='替换为 Actions 输出中的 CommandId'
-aws ssm get-command-invocation \
+invocation="$(aws ssm get-command-invocation \
   --region ap-northeast-1 \
   --command-id "$command_id" \
   --instance-id i-0d3456ec595259c39 \
-  --query '{Status:Status,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' \
-  --output json
+  --query '{Status:Status,StandardOutputContent:StandardOutputContent}' \
+  --output json)"
+[[ "$(jq -r '.Status' <<<"$invocation")" == 'Success' ]]
+jq -r '.StandardOutputContent // ""' <<<"$invocation" | grep -Ex 'DEPLOY_SHA=[0-9a-f]{40}' >/dev/null
+for milestone in \
+  'DEPLOY_PM2=online' \
+  'DEPLOY_LOCAL_HEALTH=ok' \
+  'DEPLOY_PUBLIC_HEALTH=ok'; do
+  jq -r '.StandardOutputContent // ""' <<<"$invocation" | grep -Fx "$milestone" >/dev/null
+done
 ```
 
-成功输出应包含 `SSM_RESULT=success`，以及 `DEPLOY_SHA`、`DEPLOY_PM2=online`、`DEPLOY_LOCAL_HEALTH=ok`、`DEPLOY_PUBLIC_HEALTH=ok` 这四类里程碑。命令状态不是 `Success` 时，不要重试未知的远程 shell；先查看 Actions 与本次 SSM 输出，再按下面的服务器检查定位原因。
+`DEPLOY_SHA` 用于将里程碑与本次提交对应；其余三项确认 PM2、本机健康检查和公网健康检查。`SSM_RESULT=success` 是 Actions 的最终状态字段，不是原始 SSM 输出的核验条件。命令状态不是 `Success` 或任一里程碑缺失时，不要重试未知的远程 shell；先查看 Actions 的固定状态字段，再按下面的服务器检查定位原因。
 
 ## 服务器检查（只读）
 
@@ -103,4 +111,4 @@ printf 'rollback current=%s\n' "$(readlink -f "$APP_ROOT/current")"
 
 GitHub 的部署角色仅应具备向实例 `i-0d3456ec595259c39` 执行和查询 SSM 命令的最小权限；角色信任关系仅限仓库 `HarukiShirato/real-time-monitoring-for-perpetual-contracts` 的 `master`。IAM、OIDC Provider、SSM 托管节点的建立和只读连通性验证，请使用 [AWS 部署角色设置](../ops/aws/README.md)。
 
-不要把 AWS 长期访问密钥、OIDC 令牌、`.env`、运行时数据或完整服务器日志写入仓库、Actions 输出、issue 或聊天。Actions 会掩码其短期凭证，并只回显部署里程碑；服务器详细日志留在 `shared/deploy-logs/`。需要扩大 AWS 权限、读取密钥或导出日志时，应走单独的最小权限审批，不要为排障临时扩大 GitHub 部署角色。
+不要把 AWS 长期访问密钥、OIDC 令牌、`.env`、运行时数据或完整服务器日志写入仓库、Actions 输出、issue 或聊天。Actions 会掩码其短期凭证，并固定输出 `SSM_SUBMITTED`、`SSM_STATUS`、`SSM_RESULT` 状态字段及四个 `DEPLOY_*` 里程碑，不回显完整远程日志；服务器详细日志留在 `shared/deploy-logs/`。需要扩大 AWS 权限、读取密钥或导出日志时，应走单独的最小权限审批，不要为排障临时扩大 GitHub 部署角色。
