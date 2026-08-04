@@ -88,8 +88,11 @@ const sendCommand = statements.find((statement) => asArray(statement && statemen
 const statusRead = statements.find((statement) =>
   sameSet(asArray(statement && statement.Action), ['ssm:GetCommandInvocation'])
 );
+const cancelCommand = statements.find((statement) =>
+  sameSet(asArray(statement && statement.Action), ['ssm:CancelCommand'])
+);
 const valid =
-  statements.length === 2 &&
+  statements.length === 3 &&
   sendCommand &&
   sendCommand.Effect === 'Allow' &&
   sameSet(asArray(sendCommand.Action), ['ssm:SendCommand']) &&
@@ -97,9 +100,13 @@ const valid =
   statusRead &&
   statusRead.Effect === 'Allow' &&
   sameSet(asArray(statusRead.Action), ['ssm:GetCommandInvocation']) &&
-  sameSet(asArray(statusRead.Resource), ['*']);
+  sameSet(asArray(statusRead.Resource), ['*']) &&
+  cancelCommand &&
+  cancelCommand.Effect === 'Allow' &&
+  sameSet(asArray(cancelCommand.Action), ['ssm:CancelCommand']) &&
+  sameSet(asArray(cancelCommand.Resource), ['*']);
 if (!valid) {
-  console.error(`${file}: must contain only exact SendCommand and GetCommandInvocation permissions`);
+  console.error(`${file}: must contain only exact SendCommand, GetCommandInvocation, and CancelCommand permissions`);
   process.exit(1);
 }
 NODE
@@ -110,16 +117,21 @@ validate_workflow() {
 
   node - "$file" <<'NODE'
 const fs = require('fs');
+const { spawnSync } = require('child_process');
 const YAML = require('yaml');
 const file = process.argv[2];
 const source = fs.readFileSync(file, 'utf8');
 
 function assertValues(document) {
-  if (!document || !Array.isArray(document.on?.push?.branches) || !document.on.push.branches.includes('master')) {
-    throw new Error('workflow must run on pushes to master');
+  const sameKeys = (value, expected) => {
+    const keys = Object.keys(value || {}).sort();
+    return JSON.stringify(keys) === JSON.stringify([...expected].sort());
+  };
+  if (!document || !sameKeys(document.on, ['push']) || !sameKeys(document.on.push, ['branches']) || JSON.stringify(document.on.push.branches) !== JSON.stringify(['master'])) {
+    throw new Error('workflow must have exactly one trigger: pushes to master');
   }
-  if (!document.permissions || document.permissions['id-token'] !== 'write' || document.permissions.contents !== 'read') {
-    throw new Error('workflow permissions must grant only the required id-token write and contents read access');
+  if (!sameKeys(document.permissions, ['id-token', 'contents']) || document.permissions['id-token'] !== 'write' || document.permissions.contents !== 'read') {
+    throw new Error('workflow permissions must be exactly id-token write and contents read');
   }
   if (!document.concurrency || document.concurrency.group !== 'perp-dashboard-production' || document.concurrency['cancel-in-progress'] !== false) {
     throw new Error('workflow must serialize production deployments without cancelling an active deployment');
@@ -129,31 +141,33 @@ function assertValues(document) {
   if (!deploy || deploy['runs-on'] !== 'ubuntu-latest' || !Array.isArray(deploy.steps)) {
     throw new Error('workflow must define an ubuntu deploy job with steps');
   }
-  const uses = (action) => deploy.steps.some((step) => step.uses === action);
-  if (!uses('actions/checkout@v4')) throw new Error('workflow must check out the source');
-  const setupNode = deploy.steps.find((step) => step.uses === 'actions/setup-node@v4');
+  if (deploy.steps.length !== 7 || deploy.steps[0].uses !== 'actions/checkout@v4') {
+    throw new Error('workflow must check out before the fixed deploy sequence');
+  }
+  const setupNode = deploy.steps[1];
   if (!setupNode || String(setupNode.with?.['node-version']) !== '18' || setupNode.with?.cache !== 'npm') {
     throw new Error('workflow must set up cached Node 18 dependencies');
   }
-  const credentials = deploy.steps.find((step) => step.uses === 'aws-actions/configure-aws-credentials@v4');
+  if (setupNode.uses !== 'actions/setup-node@v4' || deploy.steps[2].run !== 'npm ci' || deploy.steps[3].run !== 'npm run build' || deploy.steps[4].run !== 'npm run test:deployment') {
+    throw new Error('workflow must verify checkout, Node, dependencies, build, and deployment tests in order');
+  }
+  const credentials = deploy.steps[5];
   if (!credentials || credentials.with?.['role-to-assume'] !== 'arn:aws:iam::890742583014:role/GitHubActionsPerpDashboardDeployRole' || credentials.with?.['aws-region'] !== 'ap-northeast-1') {
     throw new Error('workflow must use the constrained AWS OIDC deployment role');
   }
-  const commands = deploy.steps.map((step) => step.run).filter((run) => typeof run === 'string').join('\n');
-  for (const command of ['npm ci', 'npm run build', 'npm run test:deployment']) {
-    if (!commands.includes(command)) throw new Error(`workflow must run ${command}`);
-  }
 
-  const deployScript = deploy.steps.find((step) => step.name === 'Deploy the checked-out commit through SSM')?.run;
+  const deployScript = deploy.steps[6]?.name === 'Deploy the checked-out commit through SSM' ? deploy.steps[6].run : undefined;
   if (typeof deployScript !== 'string') throw new Error('workflow must have an explicit SSM deployment step');
+  const shellSyntax = spawnSync('bash', ['-n'], { input: deployScript, encoding: 'utf8' });
+  if (shellSyntax.status !== 0) throw new Error(`workflow deployment shell is invalid: ${shellSyntax.stderr.trim()}`);
   const required = [
     'GITHUB_SHA',
     'raw.githubusercontent.com/HarukiShirato/real-time-monitoring-for-perpetual-contracts/',
     'jq -cn --arg command',
     "'{commands: [$command]}'",
     '--parameters "$parameters"',
-    '--region ap-northeast-1',
-    '--instance-ids i-0d3456ec595259c39',
+    "AWS_REGION='ap-northeast-1'",
+    "INSTANCE_ID='i-0d3456ec595259c39'",
     '--document-name AWS-RunShellScript',
     'sudo -u ec2-user -H',
     'install -d -m 0755 -o ec2-user -g ec2-user',
@@ -163,15 +177,44 @@ function assertValues(document) {
     'exec ',
     'aws ssm send-command',
     "--query 'Command.CommandId'",
-    'aws ssm wait command-executed',
+    '--timeout-seconds "$COMMAND_TIMEOUT_SECONDS"',
+    'POLL_INTERVAL_SECONDS=10',
+    'POLL_MAX_ATTEMPTS=90',
+    'for ((attempt = 1; attempt <= POLL_MAX_ATTEMPTS; attempt += 1))',
+    'sleep "$POLL_INTERVAL_SECONDS"',
+    'aws ssm cancel-command',
+    'trap cleanup EXIT',
+    '--command-id "$command_id"',
+    '--instance-ids "$INSTANCE_ID"',
+    'StandardOutputContent',
+    'StandardErrorContent',
+    '::add-mask::',
     'aws ssm get-command-invocation',
     'Status',
     'Success',
-    'REDACTED',
     'exit 1',
   ];
   const missing = required.filter((value) => !deployScript.includes(value));
   if (missing.length) throw new Error(`workflow SSM deployment step is missing: ${missing.join(', ')}`);
+  if (deployScript.includes('aws ssm wait command-executed')) {
+    throw new Error('workflow must use bounded GetCommandInvocation polling instead of the unbounded waiter');
+  }
+  const boundCommand = (operation, instanceFlag) => new RegExp(
+    `aws ssm ${operation}[\\s\\S]{0,600}--command-id "\\$command_id"[\\s\\S]{0,600}${instanceFlag} "\\$INSTANCE_ID"`
+  ).test(deployScript);
+  if (!boundCommand('get-command-invocation', '--instance-id') || !boundCommand('cancel-command', '--instance-ids')) {
+    throw new Error('every SSM poll and cancellation must bind the captured command ID to the target instance');
+  }
+  if (!/aws ssm send-command[\s\S]{0,600}--instance-ids "\$INSTANCE_ID"[\s\S]{0,600}--parameters "\$parameters"[\s\S]{0,600}--timeout-seconds "\$COMMAND_TIMEOUT_SECONDS"/.test(deployScript)) {
+    throw new Error('SSM send-command must use the target instance, JSON parameters, and a timeout');
+  }
+  const logCalls = deployScript.match(/print_invocation_logs/g) || [];
+  if (!/print_invocation_logs\(\) \{[\s\S]{0,600}StandardOutputContent[\s\S]{0,600}StandardErrorContent/.test(deployScript) || logCalls.length < 3) {
+    throw new Error('workflow must print SSM stdout and stderr for both successful and cancelled commands');
+  }
+  if (!deployScript.includes("[[ \"$status\" == 'Success' ]] || exit 1")) {
+    throw new Error('workflow must fail unless the same invocation reaches Success');
+  }
   if (!/GITHUB_SHA[^\n]*\^\[0-9a-f\]\{40\}\$/.test(deployScript)) {
     throw new Error('workflow must validate the immutable 40-character Git SHA before deployment');
   }
@@ -199,6 +242,8 @@ const required = [
   'aws iam create-role',
   'aws iam put-role-policy',
   'aws ssm describe-instance-information',
+  'ssm:CancelCommand',
+  '"Resource": "*"',
 ];
 const missing = required.filter((value) => !source.includes(value));
 if (missing.length) {
@@ -334,7 +379,8 @@ fi
 
 if require_file scripts/deploy-production.sh; then
   bash -n scripts/deploy-production.sh || fail 'deploy-production.sh has invalid Bash syntax'
-  contains_all scripts/deploy-production.sh flock 'npm ci' 'npm run build' 'pm2 reload' 'data.dvcapital.xyz' 'id -un' 'EXPECTED_USER'
+  contains_all scripts/deploy-production.sh flock 'npm ci' 'npm run build' 'pm2 reload' 'data.dvcapital.xyz' 'id -un' 'EXPECTED_USER' \
+    'deployment SHA' 'PM2 reload confirmed' 'local health confirmed' 'public health confirmed'
 fi
 
 if require_file scripts/migrate-production-layout.sh; then

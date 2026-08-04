@@ -134,7 +134,7 @@ Use this exact condition so only `master` in this repository can assume the role
 
 - [ ] **Step 2: Create the SSM permissions policy**
 
-Allow the standard shell document only for the target instance, plus the exact command-result read required for that invocation:
+Allow the standard shell document only for the target instance, plus the command-result read and cancellation needed to supervise that invocation. AWS does not define an IAM resource type for `ssm:CancelCommand`, so its separate statement must use `Resource: "*"`; the workflow still binds the captured command ID to the fixed instance ID when cancelling.
 
 ```json
 {
@@ -151,6 +151,11 @@ Allow the standard shell document only for the target instance, plus the exact c
     {
       "Effect": "Allow",
       "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "ssm:CancelCommand",
       "Resource": "*"
     }
   ]
@@ -413,10 +418,16 @@ aws-region: ap-northeast-1
 ```
 
 Send `scripts/deploy-production.sh $GITHUB_SHA` through `AWS-RunShellScript`, capture the
-command ID, call `aws ssm wait command-executed`, then retrieve status and output using
-`aws ssm get-command-invocation`. Because the first deployment cannot assume the script is
-already installed, the SSM command must first download the script from the exact triggering
-commit and then execute it:
+command ID, and set an SSM command timeout. Do not use the AWS CLI waiter: poll the same
+command ID and instance with `aws ssm get-command-invocation` every 10 seconds for at most
+15 minutes. On a poll timeout or GitHub Actions interruption, the `EXIT` trap must call
+`aws ssm cancel-command` for that captured command and instance, then continue bounded
+polling until a terminal status so the remote shell receives termination and the deployment
+script can run its rollback trap. Print both SSM stdout and stderr to the Actions log after
+masking known runner credentials; the remote deployment script must log its SHA, PM2 reload,
+and both health-check confirmations without printing secrets. Because the first deployment
+cannot assume the script is already installed, the SSM command must first download the script
+from the exact triggering commit and then execute it as `ec2-user`:
 
 ```bash
 install -d -m 0755 /home/ec2-user/apps/perp-dashboard/shared/bin
@@ -432,7 +443,7 @@ The workflow must fail unless SSM status is `Success`.
 - [ ] **Step 4: Run workflow lint and repository build**
 
 ```bash
-npx --yes actionlint .github/workflows/deploy-production.yml
+actionlint .github/workflows/deploy-production.yml
 npm run test:deployment
 npm run build
 ```

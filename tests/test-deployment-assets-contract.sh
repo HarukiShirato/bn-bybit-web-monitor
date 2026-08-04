@@ -34,6 +34,7 @@ const permissions = {
       'arn:aws:ec2:ap-northeast-1:890742583014:instance/i-0d3456ec595259c39',
     ] },
     { Effect: 'Allow', Action: 'ssm:GetCommandInvocation', Resource: '*' },
+    { Effect: 'Allow', Action: 'ssm:CancelCommand', Resource: '*' },
   ],
 };
 write('ops/aws/github-oidc-trust-policy.json', JSON.stringify(trust));
@@ -44,6 +45,7 @@ write('ops/aws/README.md', [
   'aws iam create-role',
   'aws iam put-role-policy',
   'aws ssm describe-instance-information',
+  'ssm:CancelCommand requires "Resource": "*" because it has no IAM resource type',
   '```bash',
   'command_id="$( aws ssm send-command --region ap-northeast-1 --instance-ids i-0d3456ec595259c39 --document-name AWS-RunShellScript --parameters \'commands=["printf ssm-ready"]\' --query \'Command.CommandId\' --output text )"',
   'aws ssm wait command-executed --region ap-northeast-1 --command-id "$command_id" --instance-id i-0d3456ec595259c39',
@@ -81,16 +83,63 @@ write('.github/workflows/deploy-production.yml', [
   '          aws-region: ap-northeast-1',
   '      - name: Deploy the checked-out commit through SSM',
   '        run: |',
+  '          set -Eeuo pipefail',
+  "          INSTANCE_ID='i-0d3456ec595259c39'",
+  "          AWS_REGION='ap-northeast-1'",
+  '          COMMAND_TIMEOUT_SECONDS=900',
+  '          POLL_INTERVAL_SECONDS=10',
+  '          POLL_MAX_ATTEMPTS=90',
+  "          command_id=''",
+  '          completed=0',
+  '          terminal=0',
+  "          invocation=''",
+  "          status='Unknown'",
+  '          for sensitive_var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN ACTIONS_ID_TOKEN_REQUEST_TOKEN; do',
+  '            sensitive_value="${!sensitive_var:-}"',
+  "            [[ -z \"$sensitive_value\" ]] || printf '::add-mask::%s\\n' \"$sensitive_value\"",
+  '          done',
+  '          get_invocation() {',
+  "            aws ssm get-command-invocation --region \"$AWS_REGION\" --command-id \"$command_id\" --instance-id \"$INSTANCE_ID\" --query '{Status:Status,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' --output json",
+  '          }',
+  '          print_invocation_logs() {',
+  "            jq -r '.StandardOutputContent // \"\"' <<<\"$invocation\"",
+  "            jq -r '.StandardErrorContent // \"\"' <<<\"$invocation\" >&2",
+  '          }',
+  '          await_terminal_status() {',
+  '            local attempt',
+  '            for ((attempt = 1; attempt <= POLL_MAX_ATTEMPTS; attempt += 1)); do',
+  '              if invocation="$(get_invocation)"; then',
+  "                status=\"$(jq -r '.Status // \"Unknown\"' <<<\"$invocation\")\"",
+  '                case "$status" in Success|Cancelled|TimedOut|Failed) terminal=1; return 0 ;; esac',
+  '              fi',
+  '              (( attempt == POLL_MAX_ATTEMPTS )) || sleep "$POLL_INTERVAL_SECONDS"',
+  '            done',
+  '            return 1',
+  '          }',
+  '          cancel_and_wait() {',
+  '            aws ssm cancel-command --region "$AWS_REGION" --command-id "$command_id" --instance-ids "$INSTANCE_ID" || true',
+  '            if await_terminal_status; then print_invocation_logs; fi',
+  '          }',
+  '          cleanup() {',
+  '            local exit_code=$?',
+  '            trap - EXIT INT TERM',
+  '            if [[ -n "$command_id" && "$completed" -eq 0 && "$terminal" -eq 0 ]]; then cancel_and_wait; fi',
+  '            exit "$exit_code"',
+  '          }',
+  '          trap cleanup EXIT',
+  "          trap 'exit 130' INT",
+  "          trap 'exit 143' TERM",
   '          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]',
   '          script_url="https://raw.githubusercontent.com/HarukiShirato/real-time-monitoring-for-perpetual-contracts/${GITHUB_SHA}/scripts/deploy-production.sh"',
   "          remote_command=\"$(jq -nr --arg sha \"$GITHUB_SHA\" --arg script_url \"$script_url\" '[\"install -d -m 0755 -o ec2-user -g ec2-user /home/ec2-user/apps/perp-dashboard/shared/bin\", \"sudo -u ec2-user -H\", \"target=/home/ec2-user/apps/perp-dashboard/shared/bin/deploy-production-$sha.sh\", \"curl --fail --silent --show-error --location\", \"exec \\\"$target\\\" \\\"$sha\\\"\"] | join(\"\\\\n\")')\"",
   "          parameters=\"$(jq -cn --arg command \"$remote_command\" '{commands: [$command]}')\"",
-  "          command_id=\"$(aws ssm send-command --region ap-northeast-1 --instance-ids i-0d3456ec595259c39 --document-name AWS-RunShellScript --parameters \"$parameters\" --query 'Command.CommandId')\"",
-  '          aws ssm wait command-executed "$command_id"',
-  '          aws ssm get-command-invocation --query "Status Success REDACTED"',
-  '          exit 1',
+  "          command_id=\"$(aws ssm send-command --region \"$AWS_REGION\" --instance-ids \"$INSTANCE_ID\" --document-name AWS-RunShellScript --parameters \"$parameters\" --timeout-seconds \"$COMMAND_TIMEOUT_SECONDS\" --query 'Command.CommandId')\"",
+  '          if ! await_terminal_status; then exit 1; fi',
+  '          print_invocation_logs',
+  "          [[ \"$status\" == 'Success' ]] || exit 1",
+  '          completed=1',
 ].join('\n'));
-write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nEXPECTED_USER=ec2-user\nid -un\nflock\nnpm ci\nnpm run build\npm2 reload\ndata.dvcapital.xyz\n');
+write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nEXPECTED_USER=ec2-user\nid -un\nflock\nnpm ci\nnpm run build\npm2 reload\ndata.dvcapital.xyz\ndeployment SHA\nPM2 reload confirmed\nlocal health confirmed\npublic health confirmed\n');
 write('scripts/migrate-production-layout.sh', [
   '#!/usr/bin/env bash',
   'rsync -a legacy/data/ shared/data/',
@@ -184,9 +233,56 @@ fixture="$(make_fixture)"
 node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
 const fs = require('fs');
 const file = process.argv[2];
-fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('          exit 1', '          return'));
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('|| exit 1', '|| true'));
 NODE
 expect_fail "$fixture" 'SSM deployment that does not fail after a non-success status'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('--parameters "$parameters"', '--parameters "{}"'));
+NODE
+expect_fail "$fixture" 'SSM deployment missing safe JSON parameters'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('aws ssm cancel-command', 'aws ssm list-commands'));
+NODE
+expect_fail "$fixture" 'SSM deployment without cancellation on timeout or interruption'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replaceAll('print_invocation_logs', 'discard_invocation_logs'));
+NODE
+expect_fail "$fixture" 'SSM deployment without stdout and stderr logs'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+const source = fs.readFileSync(file, 'utf8');
+fs.writeFileSync(file, source.replace('permissions:', '  schedule:\n    - cron: "0 0 * * *"\npermissions:'));
+NODE
+expect_fail "$fixture" 'workflow with an additional trigger'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+const source = fs.readFileSync(file, 'utf8');
+fs.writeFileSync(file, source.replace('  contents: read', '  contents: read\n  actions: read'));
+NODE
+expect_fail "$fixture" 'workflow with an additional permission'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"

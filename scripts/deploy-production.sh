@@ -18,6 +18,8 @@ readonly LOCAL_HEALTH_BUDGET_SECONDS=57
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid git SHA" >&2; exit 64; }
 [[ "$(id -un)" == "$EXPECTED_USER" ]] || { echo "must run as $EXPECTED_USER" >&2; exit 77; }
 
+printf 'deployment SHA: %s\n' "$SHA"
+
 mkdir -p "$RELEASES" "$SHARED"
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo "deployment already running" >&2; exit 75; }
@@ -224,8 +226,11 @@ switched=1
 
 cd "$CURRENT"
 pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env || fail_deployment 'PM2 reload failed'
+printf 'PM2 reload confirmed for %s at SHA %s\n' "$PM2_APP" "$SHA"
 wait_for_local_health || fail_deployment 'local health check failed'
+printf 'local health confirmed for SHA %s\n' "$SHA"
 curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null || fail_deployment 'public health check failed'
+printf 'public health confirmed for SHA %s\n' "$SHA"
 
 printf '{"sha":"%s","deployed_at":"%s"}\n' \
   "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$release/.deployment-success.json"
@@ -241,4 +246,4 @@ while IFS= read -r candidate; do
   rm -rf -- "$candidate"
 done < <(find "$RELEASES" -mindepth 2 -maxdepth 2 -type f -name '.deployment-success.json' -printf '%T@ %h\n' | sort -nr | tail -n +6 | cut -d' ' -f2-)
 
-echo "deployed $SHA"
+echo "deployed $SHA with PM2 and health checks confirmed"

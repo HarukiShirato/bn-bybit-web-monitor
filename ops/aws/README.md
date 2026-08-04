@@ -33,7 +33,7 @@ aws iam create-role \
 
 ## 3. 绑定最小 SSM 权限
 
-此内联策略只允许向 `i-0d3456ec595259c39` 使用 `AWS-RunShellScript`，以及读取该实例命令的结果。
+此内联策略只允许向 `i-0d3456ec595259c39` 使用 `AWS-RunShellScript`，以及读取该实例命令的结果。它还包含 `ssm:CancelCommand`：AWS 的服务授权参考没有为该操作定义可放进 IAM `Resource` 的资源类型，因此这个单独语句必须使用 `"Resource": "*"`。工作流只会对它刚刚捕获的 `CommandId` 调用取消，并且同时传入该目标实例 ID；这使超时或 GitHub Actions 被取消时，SSM 会终止远端 shell，让部署脚本的 `EXIT` 回滚处理运行。
 
 ```bash
 aws iam put-role-policy \
