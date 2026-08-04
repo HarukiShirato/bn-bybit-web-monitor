@@ -47,7 +47,7 @@ PM2_APP=perp-dashboard
 
 - [ ] **Step 1: Write the failing deployment asset test**
 
-Create a POSIX shell test that requires the planned files and verifies these exact invariants:
+Create a Bash shell test that requires the planned files and verifies these exact invariants:
 
 ```bash
 #!/usr/bin/env bash
