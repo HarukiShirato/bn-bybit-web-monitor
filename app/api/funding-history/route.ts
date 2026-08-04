@@ -7,7 +7,11 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 const HL_INFO_URL = 'https://api.hyperliquid.xyz/info';
-const HL_HISTORY_HOURS = 200; // 与其它所的 limit=200 对齐
+// 各所统一按 31 天拉历史，保证 30d 年化窗口有完整数据；
+// 单次条数有上限的（HL 500 / Bybit 200 / OKX 100），1h 结算的币需要翻页补齐
+const HISTORY_TARGET_DAYS = 31;
+const HL_PAGE_LIMIT = 500;
+const HL_MAX_PAGES = 3;
 
 // perps 表里主 dex 的 symbol 被归一成 XXXUSDT（kPEPE -> PEPEUSDT），
 // 查 HL 需要还原成原始 coin 名，用 meta 建映射，缓存 5 分钟。
@@ -104,7 +108,7 @@ export async function GET(request: Request) {
       const response = await axios.get('https://www.binance.com/fapi/v1/fundingRate', {
         params: {
           symbol: symbol,
-          limit: 200 // 7d × 24h/1h = 168, 需要至少 168 条
+          limit: 1000 // 1h 结算的币要覆盖 30d 年化需要 720 条，API 上限 1000
         }
       });
       
@@ -130,22 +134,33 @@ export async function GET(request: Request) {
       }
 
     } else if (exchange === 'Bybit') {
-      // Bybit API: GET /v5/market/funding/history
-      const response = await axios.get('https://api.bybit.com/v5/market/funding/history', {
-        params: {
-          category: 'linear',
-          symbol: symbol,
-          limit: 200
-        }
-      });
+      // Bybit API: GET /v5/market/funding/history，单次上限 200 条（倒序）。
+      // 1h 结算的币 200 条只有 8 天，要覆盖 30d 年化需用 endTime 往前翻页。
+      const target = Date.now() - HISTORY_TARGET_DAYS * 86400000;
+      let endTime = 0;
 
-      if (response.data.retCode === 0 && response.data.result.list) {
-        // Bybit returns data in reverse chronological order
-        historyData = response.data.result.list.map((item: any) => ({
+      for (let page = 0; page < 5; page++) {
+        const params: any = { category: 'linear', symbol, limit: 200 };
+        if (endTime) params.endTime = endTime;
+        const response = await axios.get('https://api.bybit.com/v5/market/funding/history', {
+          params,
+          timeout: 10000,
+        });
+
+        const list = response.data?.retCode === 0 ? response.data.result?.list : null;
+        if (!list?.length) break;
+
+        const batch = list.map((item: any) => ({
           time: parseInt(item.fundingRateTimestamp),
           rate: parseFloat(item.fundingRate)
-        })).reverse();
+        }));
+        historyData.push(...batch);
+
+        const earliest = batch[batch.length - 1].time; // 倒序，末尾最早
+        if (batch.length < 200 || earliest <= target) break;
+        endTime = earliest - 1;
       }
+      historyData.sort((a, b) => a.time - b.time);
 
     } else if (exchange === 'OKX') {
       // OKX API: GET /api/v5/public/funding-rate-history
@@ -153,22 +168,33 @@ export async function GET(request: Request) {
       // Convert BTCUSDT -> BTC-USDT-SWAP
       const base = symbol.replace(/USDT$/, '');
       const instId = base + '-USDT-SWAP';
-      
-      const response = await axios.get('https://www.okx.com/api/v5/public/funding-rate-history', {
-        params: {
-          instId,
-          limit: 200,
-        },
-        timeout: 10000,
-      });
 
-      if (response.data?.data) {
-        // OKX returns data in reverse chronological order
-        historyData = response.data.data.map((item: any) => ({
+      // 单次上限 100 条（倒序）。1h 结算的币要覆盖 30d 得用 after 游标往前翻页
+      const target = Date.now() - HISTORY_TARGET_DAYS * 86400000;
+      let after = '';
+
+      for (let page = 0; page < 10; page++) {
+        const params: any = { instId, limit: 100 };
+        if (after) params.after = after;
+        const response = await axios.get('https://www.okx.com/api/v5/public/funding-rate-history', {
+          params,
+          timeout: 10000,
+        });
+
+        const list = response.data?.data;
+        if (!list?.length) break;
+
+        const batch = list.map((item: any) => ({
           time: parseInt(item.fundingTime || 0),
           rate: parseFloat(item.realizedRate || item.fundingRate || 0),
-        })).reverse();
+        }));
+        historyData.push(...batch);
+
+        const earliest = batch[batch.length - 1].time; // 倒序，末尾最早
+        if (batch.length < 100 || earliest <= target) break;
+        after = String(earliest);
       }
+      historyData.sort((a, b) => a.time - b.time);
     } else if (exchange === 'Hyperliquid') {
       // HL: POST /info {type:'fundingHistory'}，每小时结算一次
       // builder dex（xyz:NVDA 等）symbol 本身就是 coin 名，主 dex 需还原 kXXX
@@ -177,17 +203,23 @@ export async function GET(request: Request) {
         const map = await getHlCoinMap();
         coin = map.get(symbol) || symbol.replace(/USDT$/, '');
       }
-      const startTime = Date.now() - HL_HISTORY_HOURS * 3600 * 1000;
+      const now = Date.now();
+      let startTime = now - HISTORY_TARGET_DAYS * 86400000;
 
-      const response = await axios.post(HL_INFO_URL,
-        { type: 'fundingHistory', coin, startTime },
-        { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
-      );
-
-      historyData = (response.data || []).map((item: any) => ({
-        time: item.time,
-        rate: parseFloat(item.fundingRate || '0'),
-      }));
+      for (let page = 0; page < HL_MAX_PAGES; page++) {
+        const response = await axios.post(HL_INFO_URL,
+          { type: 'fundingHistory', coin, startTime },
+          { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+        const batch = (response.data || []).map((item: any) => ({
+          time: item.time,
+          rate: parseFloat(item.fundingRate || '0'),
+        }));
+        historyData.push(...batch);
+        if (batch.length < HL_PAGE_LIMIT) break;
+        startTime = Math.max(...batch.map((r: { time: number }) => r.time)) + 1;
+        if (startTime >= now) break;
+      }
 
     } else if (exchange === 'Aster') {
       // Aster 没有公开的历史资金费接口，用采集器落盘的数据
