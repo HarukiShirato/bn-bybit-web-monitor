@@ -4,8 +4,8 @@ import path from 'path';
 /**
  * 每个合约在多个回看窗口下的资金费年化，数据源同样是采集器落盘的 funding-history.json。
  *
- * 与 funding7d.ts 的区别：那个只出 7d 单值供 perps 表用，这里一次算好 3d / 7d 供持仓表用。
- * 文件 20MB+ 且每小时才重写，所以照同样的路子按 mtime 缓存解析结果。
+ * 一次算好 3d / 7d，perps 表和持仓表共用同一套口径。
+ * 文件 20MB+ 且每小时才重写，所以按 mtime 缓存解析结果。
  */
 const DATA_FILE = path.join(process.cwd(), 'data', 'funding-history.json');
 

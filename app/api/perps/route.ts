@@ -6,7 +6,7 @@ import { getHyperliquidPerps } from '@/lib/exchanges/hyperliquid';
 import { getAsterPerps } from '@/lib/exchanges/aster';
 import { getBatchMarketDataForSymbols } from '@/lib/marketData';
 import { resolveIcons, baseOfSymbol, STOCK_TICKERS } from '@/lib/coinIcons';
-import { get7dAprMap } from '@/lib/funding7d';
+import { getFundingWindowMap } from '@/lib/fundingWindows';
 
 // 必须在运行时执行：这个路由会把图标抓到本地磁盘，构建期预渲染的话
 // 下载任务会随构建进程一起消失。路由内部已有 60s 进程级缓存兜住压力。
@@ -57,6 +57,7 @@ export interface PerpData {
   coinImage?: string; // 币种图标
   hasFundingData?: boolean; // 是否拿到 funding/premium 数据
   hasOpenInterestData?: boolean; // 是否拿到 OI 数据
+  apr3d?: number | null; // 近 3 日资金费年化（%），来自采集器历史
   apr7d?: number | null; // 近 7 日资金费年化（%），来自采集器历史
   isTradFi?: boolean; // 股票/商品类永续，市值与币种图标不适用
 }
@@ -284,10 +285,12 @@ export async function GET() {
       perp.coinImage = iconResolved.get(perp.symbol) || perp.coinImage;
     });
 
-    // 7 日资金费年化（读采集器历史，按文件 mtime 缓存）
-    const aprMap = get7dAprMap();
+    // 3 日 / 7 日资金费年化（读采集器历史，按文件 mtime 缓存，与持仓表同一套口径）
+    const windowMap = getFundingWindowMap();
     perpsMap.forEach(perp => {
-      perp.apr7d = aprMap.get(`${perp.exchange}:${perp.symbol}`) ?? null;
+      const w = windowMap.get(`${perp.exchange}:${perp.symbol}`);
+      perp.apr3d = w?.apr3d ?? null;
+      perp.apr7d = w?.apr7d ?? null;
     });
 
     // 转换为数组
