@@ -1,6 +1,7 @@
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import { windowApr } from './fundingWindows';
 
 /**
  * 资金费率聚合器 v5
@@ -350,32 +351,18 @@ async function getLatestSnapshot(): Promise<RateSnapshot> {
 }
 
 
-/* ── 从数据时间戳自动检测结算间隔 ── */
-function detectIntervalHours(rates: SettledRate[]): number {
-  if (rates.length < 2) return 8;
-  // Use median of first few intervals to be robust
-  const intervals: number[] = [];
-  for (let i = 1; i < Math.min(rates.length, 6); i++) {
-    intervals.push((rates[i].time - rates[i - 1].time) / 3600000);
-  }
-  intervals.sort((a, b) => a - b);
-  const median = intervals[Math.floor(intervals.length / 2)];
-  // Round to nearest standard interval: 1, 2, 4, 8
-  if (median <= 1.5) return 1;
-  if (median <= 3) return 2;
-  if (median <= 6) return 4;
-  return 8;
-}
-
-/* ── 从结算数据计算年化 ── */
-function calcAprFromSettled(rates: SettledRate[], days: number, intervalHours: number): number {
-  if (rates.length === 0) return 0;
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  const recent = rates.filter(r => r.time >= cutoff);
-  if (recent.length === 0) return 0;
-  const avgRate = recent.reduce((sum, r) => sum + r.rate, 0) / recent.length;
-  const settlementsPerDay = 24 / intervalHours;
-  return avgRate * settlementsPerDay * 365;
+/* ── 从结算数据计算年化 ──
+ * 口径统一到 lib/fundingWindows：窗口内费率之和 ÷ 实际覆盖小时数 × 8760。
+ * 旧实现是"点均值 × 24/结算间隔 × 365"，而间隔取自**最老的 6 个点**，
+ * 交易所把结算频率从 1h 改成 4h（或反过来）之后，年化会差整整 4 倍。
+ * declaredIntervalHours 只在窗口内点太少、推不出间隔时兜底。
+ */
+function calcAprFromSettled(
+  rates: SettledRate[],
+  days: number,
+  declaredIntervalHours?: number
+): number | null {
+  return windowApr(rates, days, { declaredIntervalHours });
 }
 
 const EXCHANGE_1000X_ASSETS = new Set([
@@ -399,10 +386,9 @@ export async function batchGetFundingStats(assets: string[]): Promise<Map<string
     let binance3d: number | null = null, binance7d: number | null = null, binance30d: number | null = null;
     const bnHist = histData?.binance?.[bnSymbol];
     if (bnHist && bnHist.length > 0) {
-      const bnInterval = detectIntervalHours(bnHist);
-      binance3d = calcAprFromSettled(bnHist, 3, bnInterval);
-      binance7d = calcAprFromSettled(bnHist, 7, bnInterval);
-      binance30d = calcAprFromSettled(bnHist, 30, bnInterval);
+      binance3d = calcAprFromSettled(bnHist, 3);
+      binance7d = calcAprFromSettled(bnHist, 7);
+      binance30d = calcAprFromSettled(bnHist, 30);
     }
 
     // Bybit: 从文件读取实际结算历史
@@ -429,20 +415,18 @@ export async function batchGetFundingStats(assets: string[]): Promise<Map<string
     let okx3d: number | null = null, okx7d: number | null = null, okx30d: number | null = null;
     const okxHist = histData?.okx?.[upper + 'USDT'];
     if (okxHist && okxHist.length > 0) {
-      const okxInterval = detectIntervalHours(okxHist);
-      okx3d = calcAprFromSettled(okxHist, 3, okxInterval);
-      okx7d = calcAprFromSettled(okxHist, 7, okxInterval);
-      okx30d = calcAprFromSettled(okxHist, 30, okxInterval);
+      okx3d = calcAprFromSettled(okxHist, 3);
+      okx7d = calcAprFromSettled(okxHist, 7);
+      okx30d = calcAprFromSettled(okxHist, 30);
     }
 
     // Aster: 从文件读取，结算间隔按币种检测（BTC 8h，部分小币 1h/4h）
     let aster3d: number | null = null, aster7d: number | null = null, aster30d: number | null = null;
     const asterHist = histData?.aster?.[bnSymbol];  // Aster 的 1000x 命名与 Binance 一致
     if (asterHist && asterHist.length > 0) {
-      const asterInterval = detectIntervalHours(asterHist);
-      aster3d = calcAprFromSettled(asterHist, 3, asterInterval);
-      aster7d = calcAprFromSettled(asterHist, 7, asterInterval);
-      aster30d = calcAprFromSettled(asterHist, 30, asterInterval);
+      aster3d = calcAprFromSettled(asterHist, 3);
+      aster7d = calcAprFromSettled(asterHist, 7);
+      aster30d = calcAprFromSettled(asterHist, 30);
     }
 
     result.set(upper, { binance3d, binance7d, binance30d, bybit3d, bybit7d, bybit30d, hyperliquid3d, hyperliquid7d, hyperliquid30d, okx3d, okx7d, okx30d, aster3d, aster7d, aster30d });
