@@ -289,6 +289,8 @@ if require_file scripts/migrate-production-layout.sh; then
     'rsync -a' 'git diff' 'sha256sum' '/home/ec2-user/perp-dashboard/.env' \
     'pm2 stop funding-collector arbitrage-collector staking-collector positions-collector' \
     'pm2 startOrRestart' 'pm2 resurrect'
+  grep -Eq '^[[:space:]]*pm2 save[[:space:]]*$' scripts/migrate-production-layout.sh || fail 'migration must use pm2 save without arguments'
+  grep -Eq '^[[:space:]]*pm2 resurrect[[:space:]]*$' scripts/migrate-production-layout.sh || fail 'migration must use pm2 resurrect without arguments'
   if grep -Fq 'rm -rf /home/ec2-user/perp-dashboard' scripts/migrate-production-layout.sh; then
     fail 'migrate-production-layout.sh must not delete the legacy checkout'
   fi
@@ -299,6 +301,22 @@ if require_file ecosystem.config.cjs; then
   contains_all ecosystem.config.cjs \
     'perp-dashboard' 'funding-collector' 'arbitrage-collector' 'staking-collector' 'positions-collector' \
     'cwd: CURRENT' 'PERP_DATA_DIR: SHARED_DATA'
+  node - <<'NODE' || fail 'ecosystem.config.cjs must define exactly the production PM2 processes'
+const config = require(process.cwd() + '/ecosystem.config.cjs');
+const current = '/home/ec2-user/apps/perp-dashboard/current';
+const sharedData = '/home/ec2-user/apps/perp-dashboard/shared/data';
+const expected = new Set(['perp-dashboard', 'funding-collector', 'arbitrage-collector', 'staking-collector', 'positions-collector']);
+const apps = config.apps;
+if (!Array.isArray(apps) || apps.length !== expected.size || new Set(apps.map((app) => app.name)).size !== expected.size) process.exit(1);
+for (const app of apps) {
+  if (!expected.has(app.name) || app.cwd !== current) process.exit(1);
+  if (app.name === 'perp-dashboard') {
+    if (app.script !== 'npm' || app.args !== 'start') process.exit(1);
+  } else if (app.env?.PERP_DATA_DIR !== sharedData) {
+    process.exit(1);
+  }
+}
+NODE
 fi
 
 for collector in scripts/funding-collector.js scripts/arbitrage-collector.js scripts/staking-collector.js scripts/positions-collector.js; do
