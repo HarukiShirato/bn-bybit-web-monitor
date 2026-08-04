@@ -106,12 +106,12 @@ concurrency:
 
 工作流步骤：
 
-1. checkout 触发提交；
-2. 在 GitHub Runner 上执行依赖安装和生产构建；
-3. 通过 OIDC 承担专用 AWS Role；
+1. `verify` job 仅有 `contents: read`，checkout 后执行依赖安装、生产构建和测试；
+2. `deploy` job 必须等待 `verify`，才取得 `id-token: write` 并通过 OIDC 承担专用 AWS Role；
+3. 所有 GitHub Action 固定到完整 commit SHA；升级时人工审阅上游 release 与 commit，再同步更新 pin 和测试；
 4. 使用 SSM `SendCommand` 将完整 commit SHA 发送给目标 EC2；
-5. 轮询 SSM command，直到成功、失败或超时；
-6. 从 SSM 输出中确认部署 commit、PM2 状态和健康检查；
+5. SSM 同时设置 delivery `timeout-seconds` 和 RunShellScript `executionTimeout`，以绝对 deadline 轮询；超时或中断时取消该 command，清理阶段只短轮询；
+6. EC2 将 Git/npm/build 明细写入权限 0600 的本地日志；Actions 仅白名单输出固定 SHA、PM2 和健康检查里程碑，绝不转发原始 stdout/stderr；
 7. 任何一步失败，GitHub Actions 以失败结束并保留日志。
 
 Runner 预构建用于尽早失败；EC2 仍需再次构建，避免不同 CPU、Node 或原生依赖导致

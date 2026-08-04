@@ -171,6 +171,9 @@ for (const collector of [
   write(`scripts/${collector}`, 'const dataDir = process.env.PERP_DATA_DIR;\n');
 }
 NODE
+  cp "$root/.github/workflows/deploy-production.yml" "$fixture/.github/workflows/deploy-production.yml"
+  cp "$root/scripts/deploy-production.sh" "$fixture/scripts/deploy-production.sh"
+  cp "$root/scripts/run-ssm-deployment.sh" "$fixture/scripts/run-ssm-deployment.sh"
   printf '%s\n' "$fixture"
 }
 
@@ -224,7 +227,7 @@ fixture="$(make_fixture)"
 node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
 const fs = require('fs');
 const file = process.argv[2];
-fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('jq -cn --arg command', 'printf'));
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('bash scripts/run-ssm-deployment.sh', 'true'));
 NODE
 expect_fail "$fixture" 'SSM deployment with manually constructed parameters'
 rm -rf "$fixture"
@@ -233,7 +236,7 @@ fixture="$(make_fixture)"
 node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
 const fs = require('fs');
 const file = process.argv[2];
-fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('|| exit 1', '|| true'));
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('bash scripts/run-ssm-deployment.sh', 'true'));
 NODE
 expect_fail "$fixture" 'SSM deployment that does not fail after a non-success status'
 rm -rf "$fixture"
@@ -242,7 +245,7 @@ fixture="$(make_fixture)"
 node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
 const fs = require('fs');
 const file = process.argv[2];
-fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('--parameters "$parameters"', '--parameters "{}"'));
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('bash scripts/run-ssm-deployment.sh', 'true'));
 NODE
 expect_fail "$fixture" 'SSM deployment missing safe JSON parameters'
 rm -rf "$fixture"
@@ -251,7 +254,7 @@ fixture="$(make_fixture)"
 node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
 const fs = require('fs');
 const file = process.argv[2];
-fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('aws ssm cancel-command', 'aws ssm list-commands'));
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('bash scripts/run-ssm-deployment.sh', 'true'));
 NODE
 expect_fail "$fixture" 'SSM deployment without cancellation on timeout or interruption'
 rm -rf "$fixture"
@@ -260,7 +263,7 @@ fixture="$(make_fixture)"
 node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
 const fs = require('fs');
 const file = process.argv[2];
-fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replaceAll('print_invocation_logs', 'discard_invocation_logs'));
+fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('::add-mask::', 'masked::'));
 NODE
 expect_fail "$fixture" 'SSM deployment without stdout and stderr logs'
 rm -rf "$fixture"

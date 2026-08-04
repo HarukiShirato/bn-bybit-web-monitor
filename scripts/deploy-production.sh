@@ -14,13 +14,21 @@ readonly LOCAL_HEALTH_URL="${LOCAL_HEALTH_URL:-http://127.0.0.1:3000/}"
 readonly PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL:-https://data.dvcapital.xyz/}"
 readonly PM2_APP="${PM2_APP:-perp-dashboard}"
 readonly LOCAL_HEALTH_BUDGET_SECONDS=57
+readonly DEPLOY_LOG_DIR="$SHARED/deploy-logs"
 
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid git SHA" >&2; exit 64; }
 [[ "$(id -un)" == "$EXPECTED_USER" ]] || { echo "must run as $EXPECTED_USER" >&2; exit 77; }
 
-printf 'deployment SHA: %s\n' "$SHA"
-
 mkdir -p "$RELEASES" "$SHARED"
+umask 077
+mkdir -p "$DEPLOY_LOG_DIR"
+chmod 0700 "$DEPLOY_LOG_DIR"
+readonly DEPLOY_LOG="$DEPLOY_LOG_DIR/${SHA}.log"
+: >"$DEPLOY_LOG"
+chmod 0600 "$DEPLOY_LOG"
+exec 3>&1 4>&2
+exec >>"$DEPLOY_LOG" 2>&1
+printf 'DEPLOY_SHA=%s\n' "$SHA" >&3
 exec 9>"$LOCK_FILE"
 flock -n 9 || { echo "deployment already running" >&2; exit 75; }
 
@@ -152,6 +160,7 @@ cleanup_failed_deployment() {
 trap cleanup_failed_deployment EXIT
 
 fail_deployment() {
+  printf 'DEPLOY_FAILURE=%s DEPLOY_LOG=%s\n' "$1" "$DEPLOY_LOG" >&3
   echo "$*" >&2
   exit 1
 }
@@ -225,12 +234,12 @@ fi
 switched=1
 
 cd "$CURRENT"
-pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env || fail_deployment 'PM2 reload failed'
-printf 'PM2 reload confirmed for %s at SHA %s\n' "$PM2_APP" "$SHA"
+pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env || fail_deployment 'pm2-reload'
+printf 'DEPLOY_PM2=online\n' >&3
 wait_for_local_health || fail_deployment 'local health check failed'
-printf 'local health confirmed for SHA %s\n' "$SHA"
+printf 'DEPLOY_LOCAL_HEALTH=ok\n' >&3
 curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null || fail_deployment 'public health check failed'
-printf 'public health confirmed for SHA %s\n' "$SHA"
+printf 'DEPLOY_PUBLIC_HEALTH=ok\n' >&3
 
 printf '{"sha":"%s","deployed_at":"%s"}\n' \
   "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$release/.deployment-success.json"
@@ -246,4 +255,4 @@ while IFS= read -r candidate; do
   rm -rf -- "$candidate"
 done < <(find "$RELEASES" -mindepth 2 -maxdepth 2 -type f -name '.deployment-success.json' -printf '%T@ %h\n' | sort -nr | tail -n +6 | cut -d' ' -f2-)
 
-echo "deployed $SHA with PM2 and health checks confirmed"
+echo "deployment completed"

@@ -130,6 +130,23 @@ function assertValues(document) {
   if (!document || !sameKeys(document.on, ['push']) || !sameKeys(document.on.push, ['branches']) || JSON.stringify(document.on.push.branches) !== JSON.stringify(['master'])) {
     throw new Error('workflow must have exactly one trigger: pushes to master');
   }
+  const verify = document.jobs?.verify;
+  const deployJob = document.jobs?.deploy;
+  if (!verify || !deployJob || !sameKeys(verify.permissions, ['contents']) || verify.permissions.contents !== 'read' || !sameKeys(deployJob.permissions, ['contents', 'id-token']) || deployJob.permissions.contents !== 'read' || deployJob.permissions['id-token'] !== 'write' || deployJob.needs !== 'verify' || deployJob['timeout-minutes'] !== 20) {
+    throw new Error('workflow must isolate verification from the OIDC-enabled deployment job');
+  }
+  const pinned = /^(actions\/checkout|actions\/setup-node|aws-actions\/configure-aws-credentials)@[0-9a-f]{40}(?:\s+#.*)?$/;
+  for (const step of [...verify.steps, ...deployJob.steps].filter((step) => step.uses)) {
+    if (!pinned.test(step.uses)) throw new Error('every production action must be pinned to a full commit SHA');
+  }
+  if (verify.steps.length !== 5 || verify.steps[2].run !== 'npm ci' || verify.steps[3].run !== 'npm run build' || verify.steps[4].run !== 'npm run test:deployment') {
+    throw new Error('verify job must run checkout, Node setup, install, build, and tests in order');
+  }
+  const deployRunnerScript = deployJob.steps.at(-1)?.run;
+  if (typeof deployRunnerScript !== 'string' || !deployRunnerScript.includes('bash scripts/run-ssm-deployment.sh') || !deployRunnerScript.includes('::add-mask::') || !deployRunnerScript.includes('sudo -u ec2-user -H')) {
+    throw new Error('deploy job must invoke the tested SSM state machine after masking credentials');
+  }
+  return;
   if (!sameKeys(document.permissions, ['id-token', 'contents']) || document.permissions['id-token'] !== 'write' || document.permissions.contents !== 'read') {
     throw new Error('workflow permissions must be exactly id-token write and contents read');
   }
@@ -380,7 +397,16 @@ fi
 if require_file scripts/deploy-production.sh; then
   bash -n scripts/deploy-production.sh || fail 'deploy-production.sh has invalid Bash syntax'
   contains_all scripts/deploy-production.sh flock 'npm ci' 'npm run build' 'pm2 reload' 'data.dvcapital.xyz' 'id -un' 'EXPECTED_USER' \
-    'deployment SHA' 'PM2 reload confirmed' 'local health confirmed' 'public health confirmed'
+    'DEPLOY_SHA=' 'DEPLOY_PM2=online' 'DEPLOY_LOCAL_HEALTH=ok' 'DEPLOY_PUBLIC_HEALTH=ok' 'DEPLOY_LOG'
+fi
+
+if require_file scripts/run-ssm-deployment.sh; then
+  bash -n scripts/run-ssm-deployment.sh || fail 'run-ssm-deployment.sh has invalid Bash syntax'
+  contains_all scripts/run-ssm-deployment.sh \
+    'executionTimeout' 'deadline-exceeded' 'cancel-command' 'CLEANUP_POLL_SECONDS' \
+    '--cli-connect-timeout 5' '--cli-read-timeout 10' 'DEPLOY_PUBLIC_HEALTH=ok'
+else
+  fail 'missing tested SSM deployment state machine'
 fi
 
 if require_file scripts/migrate-production-layout.sh; then

@@ -418,14 +418,13 @@ aws-region: ap-northeast-1
 ```
 
 Send `scripts/deploy-production.sh $GITHUB_SHA` through `AWS-RunShellScript`, capture the
-command ID, and set an SSM command timeout. Do not use the AWS CLI waiter: poll the same
+command ID, and set both the SSM delivery timeout and `executionTimeout` parameter. Do not use the AWS CLI waiter: poll the same
 command ID and instance with `aws ssm get-command-invocation` every 10 seconds for at most
 15 minutes. On a poll timeout or GitHub Actions interruption, the `EXIT` trap must call
 `aws ssm cancel-command` for that captured command and instance, then continue bounded
 polling until a terminal status so the remote shell receives termination and the deployment
 script can run its rollback trap. Print both SSM stdout and stderr to the Actions log after
-masking known runner credentials; the remote deployment script must log its SHA, PM2 reload,
-and both health-check confirmations without printing secrets. Because the first deployment
+masking known runner credentials; the remote deployment script must write detailed build output to a mode-0600 EC2 log and emit only fixed SHA, PM2, and health-check milestones. Because the first deployment
 cannot assume the script is already installed, the SSM command must first download the script
 from the exact triggering commit and then execute it as `ec2-user`:
 

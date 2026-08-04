@@ -2,6 +2,8 @@
 
 以下命令仅供具备 AWS IAM 管理权限的人工操作员执行；本仓库的自动化不会创建、修改或删除 AWS 资源。请在仓库根目录执行，并确认当前 AWS CLI 身份属于账户 `890742583014`。
 
+工作流中的 `actions/checkout`、`actions/setup-node` 与 `aws-actions/configure-aws-credentials` 均固定到完整 commit SHA；升级时必须人工审阅官方 release 对应 commit，再同时更新 workflow 与契约测试，不能改回可变 tag。
+
 ```bash
 aws sts get-caller-identity
 ```
