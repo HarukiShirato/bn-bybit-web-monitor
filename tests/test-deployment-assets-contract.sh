@@ -2,13 +2,14 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-fixture="$(mktemp -d)"
-trap 'rm -rf "$fixture"' EXIT
 
-mkdir -p "$fixture/tests" "$fixture/.github/workflows" "$fixture/scripts" "$fixture/ops/aws"
-cp "$root/tests/test-deployment-assets.sh" "$fixture/tests/test-deployment-assets.sh"
+make_fixture() {
+  local fixture
+  fixture="$(mktemp -d)"
+  mkdir -p "$fixture/tests" "$fixture/.github/workflows" "$fixture/scripts" "$fixture/ops/aws"
+  cp "$root/tests/test-deployment-assets.sh" "$fixture/tests/test-deployment-assets.sh"
 
-node - "$fixture" <<'NODE'
+  node - "$fixture" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 const root = process.argv[2];
@@ -40,23 +41,30 @@ write('ops/aws/github-deploy-permissions.json', JSON.stringify(permissions));
 write('.github/workflows/deploy-production.yml', 'permissions:\n  id-token: write\nconcurrency:\n  cancel-in-progress: false\n');
 write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nflock\nnpm ci\nnpm run build\npm2 reload\ndata.dvcapital.xyz\n');
 write('scripts/migrate-production-layout.sh', '#!/usr/bin/env bash\n');
-write('ecosystem.config.cjs', 'module.exports = {};\n');
+write('ecosystem.config.cjs', "module.exports = { 'AWS_ACCESS_KEY_ID': '$AWS_ACCESS_KEY_ID', 'AWS_SESSION_TOKEN': '${{ secrets.X }}' };\n");
 NODE
+  printf '%s\n' "$fixture"
+}
 
 expect_pass() {
+  local fixture="$1"
   (cd "$fixture" && NODE_PATH="$root/node_modules" bash tests/test-deployment-assets.sh) >/dev/null
 }
 
 expect_fail() {
+  local fixture="$1"
+  local label="$2"
   if (cd "$fixture" && NODE_PATH="$root/node_modules" bash tests/test-deployment-assets.sh) >/dev/null 2>&1; then
-    echo "fixture validation unexpectedly passed" >&2
+    echo "fixture validation unexpectedly passed: $label" >&2
     exit 1
   fi
 }
 
-expect_pass
+fixture="$(make_fixture)"
+expect_pass "$fixture"
+rm -rf "$fixture"
 
-cp "$fixture/ops/aws/github-oidc-trust-policy.json" "$fixture/trust.valid"
+fixture="$(make_fixture)"
 node - "$fixture/ops/aws/github-oidc-trust-policy.json" <<'NODE'
 const fs = require('fs');
 const file = process.argv[2];
@@ -64,33 +72,53 @@ const policy = JSON.parse(fs.readFileSync(file));
 policy.Statement.push({ Effect: 'Allow', Principal: '*', Action: 'sts:AssumeRoleWithWebIdentity' });
 fs.writeFileSync(file, JSON.stringify(policy));
 NODE
-expect_fail
-mv "$fixture/trust.valid" "$fixture/ops/aws/github-oidc-trust-policy.json"
+expect_fail "$fixture" 'additional OIDC allow statement'
+rm -rf "$fixture"
 
-cp "$fixture/ops/aws/github-deploy-permissions.json" "$fixture/permissions.valid"
+fixture="$(make_fixture)"
+node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+const fs = require('fs');
+fs.writeFileSync(process.argv[2], '# id-token: write\npermissions: {}\nconcurrency:\n  cancel-in-progress: false\n');
+NODE
+expect_fail "$fixture" 'workflow with commented id-token permission'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
 node - "$fixture/ops/aws/github-deploy-permissions.json" <<'NODE'
 const fs = require('fs');
 const file = process.argv[2];
 const policy = JSON.parse(fs.readFileSync(file));
-policy.Statement[0].Action = ['ssm:SendCommand', 'ssm:StartSession'];
+policy.Statement = [policy.Statement[0]];
 fs.writeFileSync(file, JSON.stringify(policy));
 NODE
-expect_fail
-mv "$fixture/permissions.valid" "$fixture/ops/aws/github-deploy-permissions.json"
+expect_fail "$fixture" 'missing command-status read permissions'
+rm -rf "$fixture"
 
-node - "$fixture" <<'NODE'
+fixture="$(make_fixture)"
+node - "$fixture/ops/aws/github-deploy-permissions.json" <<'NODE'
 const fs = require('fs');
-const path = require('path');
-const root = process.argv[2];
-fs.writeFileSync(path.join(root, '.github/workflows/deploy-production.yml'), '# id-token: write\npermissions: {}\nconcurrency:\n  cancel-in-progress: false\n');
-fs.writeFileSync(path.join(root, 'scripts/migrate-production-layout.sh'), '#!/usr/bin/env bash\nAKIA1234567890ABCDEF\n');
+const file = process.argv[2];
+const policy = JSON.parse(fs.readFileSync(file));
+policy.Statement.push({ Effect: 'Allow', Action: 'ssm:StartSession', Resource: '*' });
+fs.writeFileSync(file, JSON.stringify(policy));
 NODE
-expect_fail
+expect_fail "$fixture" 'additional SSM permission'
+rm -rf "$fixture"
 
-node - "$fixture/.github/workflows/deploy-production.yml" <<'NODE'
+fixture="$(make_fixture)"
+node - "$fixture/scripts/migrate-production-layout.sh" <<'NODE'
 const fs = require('fs');
-fs.writeFileSync(process.argv[2], 'permissions:\n  id-token: write\nconcurrency:\n  cancel-in-progress: false\n');
+fs.appendFileSync(process.argv[2], 'AKIA1234567890ABCDEF\n');
 NODE
-expect_fail
+expect_fail "$fixture" 'AKIA access key'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+node - "$fixture/ecosystem.config.cjs" <<'NODE'
+const fs = require('fs');
+fs.writeFileSync(process.argv[2], 'module.exports = { "AWS_SECRET_ACCESS_KEY": "plain-test-value" };\n');
+NODE
+expect_fail "$fixture" 'quoted JSON or JavaScript secret assignment'
+rm -rf "$fixture"
 
 echo 'deployment asset contract tests passed'

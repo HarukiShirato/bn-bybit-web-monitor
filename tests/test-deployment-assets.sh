@@ -157,7 +157,7 @@ scan_for_secrets() {
   if ! node - "${paths[@]}" <<'NODE'
 const fs = require('fs');
 const paths = process.argv.slice(2);
-const names = /\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)\s*[:=]\s*(.*?)\s*(?:#.*)?$/i;
+const names = /(?:['"])?\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)(?:['"])?\s*[:=]\s*(.*?)\s*(?:#.*)?$/i;
 const files = [];
 for (const path of paths) {
   const stat = fs.statSync(path);
