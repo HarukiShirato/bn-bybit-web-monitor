@@ -317,6 +317,15 @@ fi
 [[ ! -e "$bad_app" ]] || fail 'incorrect-user migration created application directories'
 rm -rf -- "$fixture"
 
+# A failure before PM2 snapshot initialization must leave an existing dump byte-for-byte untouched.
+fixture="$(make_fixture present)"
+bad_app="$fixture/must-not-exist"
+if run_migration "$fixture" env EXPECTED_USER=definitely-not-"$(id -un)" APP_ROOT="$bad_app"; then
+  fail 'early failure unexpectedly succeeded'
+fi
+cmp -s "$fixture/expected-original-dump.pm2" "$fixture/pm2-home/dump.pm2" || fail 'early failure modified the pre-existing PM2 dump'
+rm -rf -- "$fixture"
+
 fixture="$(make_fixture)"
 bad_app="$fixture/legacy/must-not-exist"
 if run_migration "$fixture" env APP_ROOT="$bad_app"; then
