@@ -48,9 +48,6 @@ export default function Home() {
   const [earnSearchQuery, setEarnSearchQuery] = useState('');
   const [earnMinCombinedApr, setEarnMinCombinedApr] = useState(0);
   const [earnMinOi, setEarnMinOi] = useState(0);
-  const [earnMinFunding3d, setEarnMinFunding3d] = useState(0);
-  const [earnMinFunding7d, setEarnMinFunding7d] = useState(0);
-  const [earnMinFunding30d, setEarnMinFunding30d] = useState(0);
   const [earnMinVol, setEarnMinVol] = useState(0);
 
   // ========== eb65 持仓数据 ==========
@@ -254,7 +251,6 @@ export default function Home() {
   const filteredEarnData = useMemo(() => {
     const recomputeBest = (item: CombinedEarnRow): CombinedEarnRow => {
       const earnCand = item.earnRates.filter(r => earnSelectedExchanges.has(r.exchange));
-      const fundCand = item.funding.filter(f => earnSelectedExchanges.has(f.exchange));
 
       let bestEarnApr = 0, bestEarnExchange = '', bestEarn3d = 0, bestEarn7d = 0;
       if (earnCand.length > 0) {
@@ -265,29 +261,12 @@ export default function Home() {
         bestEarn7d = Math.max(...earnCand.map(c => c.apr7d ?? c.apr));
       }
 
-      const pickFund = (key: 'apr3d' | 'apr7d' | 'apr30d') => {
-        if (fundCand.length === 0) return { value: 0, exchange: '' };
-        const top = fundCand.reduce((a, b) => (b[key] > a[key] ? b : a));
-        return { value: top[key], exchange: top.exchange };
-      };
-      const f3 = pickFund('apr3d');
-      const f7 = pickFund('apr7d');
-      const f30 = pickFund('apr30d');
-
       return {
         ...item,
         bestEarnApr,
         bestEarnExchange,
         bestEarn3d,
         bestEarn7d,
-        bestFunding3d: f3.value,
-        bestFunding7d: f7.value,
-        bestFunding30d: f30.value,
-        bestFundingExchange3d: f3.exchange,
-        bestFundingExchange7d: f7.exchange,
-        bestFundingExchange30d: f30.exchange,
-        combined3d: bestEarn3d + f3.value,
-        combined7d: bestEarn7d + f7.value,
       };
     };
 
@@ -308,12 +287,9 @@ export default function Home() {
       .map(recomputeBest)
       .filter(item => {
         if (earnMinCombinedApr > 0 && item.bestEarnApr * 100 < earnMinCombinedApr) return false;
-        if (earnMinFunding3d !== 0 && item.bestFunding3d * 100 < earnMinFunding3d) return false;
-        if (earnMinFunding7d !== 0 && item.bestFunding7d * 100 < earnMinFunding7d) return false;
-        if (earnMinFunding30d !== 0 && item.bestFunding30d * 100 < earnMinFunding30d) return false;
         return true;
       });
-  }, [earnData, earnSelectedExchanges, earnSearchQuery, earnMinCombinedApr, earnMinOi, earnMinFunding3d, earnMinFunding7d, earnMinFunding30d, earnMinVol, assetOiMap]);
+  }, [earnData, earnSelectedExchanges, earnSearchQuery, earnMinCombinedApr, earnMinOi, earnMinVol, assetOiMap]);
 
   // ========== 辅助 ==========
   const maxOi = useMemo(() => {
@@ -505,12 +481,6 @@ export default function Home() {
                   onMinCombinedAprChange={setEarnMinCombinedApr}
                   minOi={earnMinOi}
                   onMinOiChange={setEarnMinOi}
-                  minFunding3d={earnMinFunding3d}
-                  onMinFunding3dChange={setEarnMinFunding3d}
-                  minFunding7d={earnMinFunding7d}
-                  onMinFunding7dChange={setEarnMinFunding7d}
-                  minFunding30d={earnMinFunding30d}
-                  onMinFunding30dChange={setEarnMinFunding30d}
                   minVol={earnMinVol}
                   onMinVolChange={setEarnMinVol}
                 />

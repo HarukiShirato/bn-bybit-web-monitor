@@ -3,7 +3,7 @@ import { getBinanceEarnProductsFromFile } from "@/lib/exchanges/binanceEarn";
 import { getBybitEarnProducts } from '@/lib/exchanges/bybitEarn';
 import { getOkxEarnProducts } from '@/lib/exchanges/okxEarn';
 // Market cap now from file (Binance products, collected every 8h)
-import { batchGetFundingStats, getOpenInterestMap, ExchangeOI, getVolumeMap, ExchangeVolume } from '@/lib/fundingAggregator';
+import { getOpenInterestMap, ExchangeOI, getVolumeMap, ExchangeVolume } from '@/lib/fundingAggregator';
 import { getOkxRealEarnRates } from '@/lib/okxRealEarn';
 import { getStakingRewardsMap, getStakingInfoMap, getMarketCapsFromFile, getBinanceQuotaFromFile, getNaviLendingRates } from "@/lib/stakingRewards";
 import { getArbitrageMap, ArbitrageInfo } from "@/lib/arbitrageData";
@@ -21,13 +21,6 @@ export interface EarnRate {
   quota?: number | null;  // 个人申购限额
 }
 
-export interface FundingRate {
-  exchange: string;
-  apr3d: number;
-  apr7d: number;
-  apr30d: number;
-}
-
 export interface CombinedEarnRow {
   asset: string;
   earnRates: EarnRate[];
@@ -35,15 +28,6 @@ export interface CombinedEarnRow {
   bestEarnExchange: string;
   bestEarn3d: number;
   bestEarn7d: number;
-  funding: FundingRate[];
-  bestFunding3d: number;
-  bestFunding7d: number;
-  bestFunding30d: number;
-  bestFundingExchange3d: string;
-  bestFundingExchange7d: string;
-  bestFundingExchange30d: string;
-  combined3d: number;
-  combined7d: number;
   coinImage?: string;
   coinName?: string;
   binanceOI: number | null;
@@ -135,9 +119,8 @@ export async function GET() {
     const allAssets = Array.from(assetMap.keys());
     const symbols = allAssets.map(a => a + 'USDT');
 
-    // 并行获取：资金费率 + OI + 市值数据 + OKX 真实收益率
-    const [fundingMap, oiMap, volMap, marketDataMap, okxRealMap, stakingMap, stakingInfoMap, arbitrageMap, binanceQuotaMap] = await Promise.all([
-      withTimeout(batchGetFundingStats(allAssets), 55000, new Map()),
+    // 并行获取：OI + 市值数据 + OKX 真实收益率
+    const [oiMap, volMap, marketDataMap, okxRealMap, stakingMap, stakingInfoMap, arbitrageMap, binanceQuotaMap] = await Promise.all([
       withTimeout(getOpenInterestMap(allAssets), 55000, new Map()),
       withTimeout(getVolumeMap(allAssets), 55000, new Map()),
       withTimeout(getMarketCapsFromFile(), 10000, new Map()),
@@ -172,51 +155,6 @@ export async function GET() {
       const bestEarnApr = earnRates[0]?.apr || 0;
       const bestEarnExchange = earnRates[0]?.exchange || '';
 
-      const fs = fundingMap.get(asset);
-      const funding: FundingRate[] = [];
-      if (fs) {
-        if (fs.binance3d != null || fs.binance7d != null) {
-          funding.push({ exchange: 'Binance', apr3d: fs.binance3d ?? 0, apr7d: fs.binance7d ?? 0, apr30d: fs.binance30d ?? 0 });
-        }
-        if (fs.bybit3d != null || fs.bybit7d != null) {
-          funding.push({ exchange: 'Bybit', apr3d: fs.bybit3d ?? 0, apr7d: fs.bybit7d ?? 0, apr30d: fs.bybit30d ?? 0 });
-        }
-        if (fs.hyperliquid3d != null || fs.hyperliquid7d != null) {
-          funding.push({ exchange: 'Hyperliquid', apr3d: fs.hyperliquid3d ?? 0, apr7d: fs.hyperliquid7d ?? 0, apr30d: fs.hyperliquid30d ?? 0 });
-        }
-        if (fs.okx3d != null || fs.okx7d != null) {
-          funding.push({ exchange: 'OKX', apr3d: fs.okx3d ?? 0, apr7d: fs.okx7d ?? 0, apr30d: fs.okx30d ?? 0 });
-        }
-        if (fs.aster3d != null || fs.aster7d != null) {
-          funding.push({ exchange: 'Aster', apr3d: fs.aster3d ?? 0, apr7d: fs.aster7d ?? 0, apr30d: fs.aster30d ?? 0 });
-        }
-      }
-
-      let bestFunding3d = 0, bestFunding7d = 0, bestFunding30d = 0;
-      let bestFundingExchange3d = '', bestFundingExchange7d = '', bestFundingExchange30d = '';
-      if (funding.length > 0) {
-        bestFunding3d = funding[0].apr3d;
-        bestFundingExchange3d = funding[0].exchange;
-        bestFunding7d = funding[0].apr7d;
-        bestFundingExchange7d = funding[0].exchange;
-        bestFunding30d = funding[0].apr30d;
-        bestFundingExchange30d = funding[0].exchange;
-        for (let i = 1; i < funding.length; i++) {
-          if (funding[i].apr3d > bestFunding3d) {
-            bestFunding3d = funding[i].apr3d;
-            bestFundingExchange3d = funding[i].exchange;
-          }
-          if (funding[i].apr7d > bestFunding7d) {
-            bestFunding7d = funding[i].apr7d;
-            bestFundingExchange7d = funding[i].exchange;
-          }
-          if (funding[i].apr30d > bestFunding30d) {
-            bestFunding30d = funding[i].apr30d;
-            bestFundingExchange30d = funding[i].exchange;
-          }
-        }
-      }
-
       // bestEarn3d/7d: 如果有 OKX 真实数据，用真实值参与比较
       // 对于没有真实数据的交易所，3d/7d = 广告 APR
       let bestEarn3d = 0;
@@ -237,15 +175,6 @@ export async function GET() {
         bestEarnExchange,
         bestEarn3d,
         bestEarn7d,
-        funding,
-        bestFunding3d,
-        bestFunding7d,
-        bestFunding30d,
-        bestFundingExchange3d,
-        bestFundingExchange7d,
-        bestFundingExchange30d,
-        combined3d: Math.max(bestEarn3d, stakingMap.get(asset) ?? 0, arbitrageMap.get(asset)?.apr ?? 0) + bestFunding3d,
-        combined7d: Math.max(bestEarn7d, stakingMap.get(asset) ?? 0, arbitrageMap.get(asset)?.apr ?? 0) + bestFunding7d,
         coinImage: coinIcons.get(asset.toUpperCase()) || undefined,
         coinName: md?.name || undefined,
         binanceOI: oiMap.get(asset)?.binance ?? null,
@@ -272,14 +201,12 @@ export async function GET() {
       });
     }
 
-    const withFunding = rows.filter(r => r.funding.length > 0).length;
     const withRealEarn = rows.filter(r => r.earnRates.some(e => e.apr3d !== undefined)).length;
-    const fundingRatio = rows.length > 0 ? withFunding / rows.length : 1;
-    if (fundingRatio > 0.80) {
+    if (rows.length > 0) {
       cachedEarn = { data: rows, timestamp: now };
-      console.log(`[earn] cached (${withFunding}/${rows.length} funding, ${withRealEarn} with real OKX earn)`);
+      console.log(`[earn] cached (${rows.length} rows, ${withRealEarn} with real OKX earn)`);
     } else {
-      console.log(`[earn] NOT caching (${withFunding}/${rows.length} funding, ${withRealEarn} with real OKX earn)`);
+      console.log('[earn] NOT caching (0 rows)');
     }
 
     return NextResponse.json({

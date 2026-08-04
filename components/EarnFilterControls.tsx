@@ -5,12 +5,6 @@ interface EarnFilterControlsProps {
   onMinCombinedAprChange: (value: number) => void;
   minOi: number;
   onMinOiChange: (value: number) => void;
-  minFunding3d: number;
-  onMinFunding3dChange: (value: number) => void;
-  minFunding7d: number;
-  onMinFunding7dChange: (value: number) => void;
-  minFunding30d: number;
-  onMinFunding30dChange: (value: number) => void;
   minVol: number;
   onMinVolChange: (value: number) => void;
 }
@@ -20,12 +14,6 @@ export default function EarnFilterControls({
   onMinCombinedAprChange,
   minOi,
   onMinOiChange,
-  minFunding3d,
-  onMinFunding3dChange,
-  minFunding7d,
-  onMinFunding7dChange,
-  minFunding30d,
-  onMinFunding30dChange,
   minVol,
   onMinVolChange,
 }: EarnFilterControlsProps) {
@@ -39,24 +27,6 @@ export default function EarnFilterControls({
     if (value >= 10) return value.toFixed(1);
     return value.toFixed(2);
   };
-
-  const FundingInput = ({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) => (
-    <div className="flex items-center gap-2">
-      <label className="text-brand-text-secondary whitespace-nowrap font-medium text-xs">{label}</label>
-      <div className="relative group">
-        <input
-          type="number"
-          step="1"
-          value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="w-16 pl-2 pr-5 py-1 bg-brand-surface border border-brand-border rounded text-brand-text-primary focus:outline-none focus:border-brand-accent text-xs font-mono"
-        />
-        <div className="absolute inset-y-0 right-0 pr-1.5 flex items-center pointer-events-none">
-          <span className="text-brand-text-muted text-[10px]">%</span>
-        </div>
-      </div>
-    </div>
-  );
 
   return (
     <div className="flex flex-wrap items-center gap-6 text-sm">
@@ -126,15 +96,6 @@ export default function EarnFilterControls({
             ≥ ${formatMillions(displayOiMillions)}M
           </span>
         </div>
-      </div>
-
-      <div className="w-px h-8 bg-brand-border hidden sm:block" />
-
-      <div className="flex items-center gap-3 flex-wrap">
-        <label className="text-brand-text-secondary whitespace-nowrap font-medium">Min Funding</label>
-        <FundingInput label="3D" value={minFunding3d} onChange={onMinFunding3dChange} />
-        <FundingInput label="7D" value={minFunding7d} onChange={onMinFunding7dChange} />
-        <FundingInput label="30D" value={minFunding30d} onChange={onMinFunding30dChange} />
       </div>
 
       <div className="w-px h-8 bg-brand-border hidden sm:block" />
