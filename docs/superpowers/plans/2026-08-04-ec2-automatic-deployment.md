@@ -4,7 +4,7 @@
 
 **Goal:** Automatically deploy every successful push to GitHub `master` onto EC2 `i-0d3456ec595259c39`, while preserving runtime data and rolling back failed releases.
 
-**Architecture:** GitHub Actions builds the exact triggering commit, exchanges GitHub OIDC for a short-lived AWS role, and sends that SHA to the EC2 instance through SSM Run Command. EC2 builds an isolated release, atomically switches a `current` symlink, reloads PM2, verifies local and public health, and restores the previous symlink on failure.
+**Architecture:** GitHub Actions sends the exact triggering SHA through SSM. EC2 builds without production `.env`, links runtime state only after build, switches Dashboard plus four collectors as one unit, verifies all five PM2 entries and local/public health, and fully verifies rollback before deleting a failed release. Before the one-time migration marker exists, ordinary deploy fails without touching PM2; only `--prepare-only` is allowed.
 
 **Tech Stack:** GitHub Actions, GitHub OIDC, AWS IAM, AWS Systems Manager Run Command, Bash, Git, Node.js 18, npm 10, Next.js 14, PM2 6, Cloudflare Tunnel.
 
@@ -13,7 +13,7 @@
 ## File map
 
 - Create `.github/workflows/deploy-production.yml`: trigger, runner build, OIDC login, SSM invocation, and command polling.
-- Create `scripts/deploy-production.sh`: release creation, build, symlink switch, PM2 reload, health checks, rollback, and cleanup.
+- Create `scripts/deploy-production.sh`: prepare-only bootstrap, migration preflight, release build, five-process switch, health checks, rollback verification, and cleanup.
 - Create `scripts/migrate-production-layout.sh`: one-time migration of `.env`, runtime data, PM2 working directories, and collectors.
 - Create `ecosystem.config.cjs`: version-controlled PM2 definitions using `current` and `shared/data`.
 - Create `ops/aws/github-oidc-trust-policy.json`: GitHub `master`-only role trust policy.
@@ -76,7 +76,7 @@ grep -q 'cancel-in-progress: false' .github/workflows/deploy-production.yml
 grep -q 'flock' scripts/deploy-production.sh
 grep -q 'npm ci' scripts/deploy-production.sh
 grep -q 'npm run build' scripts/deploy-production.sh
-grep -q 'pm2 reload' scripts/deploy-production.sh
+grep -q 'pm2 startOrRestart' scripts/deploy-production.sh
 grep -q 'data.dvcapital.xyz' scripts/deploy-production.sh
 ! grep -R 'aws_access_key_id\|BEGIN.*PRIVATE KEY' .github ops scripts ecosystem.config.cjs
 
@@ -250,7 +250,7 @@ flock -n 9 || { echo "deployment already running" >&2; exit 75; }
 - [ ] **Step 2: Add release fetch, dependency install, and build**
 
 Clone the public repository without reusing the mutable legacy checkout, fetch the exact SHA,
-verify it, link shared files, and build:
+verify it, build without production `.env`, then link shared files:
 
 ```bash
 release="$RELEASES/$SHA"
@@ -260,17 +260,16 @@ git clone --no-checkout https://github.com/HarukiShirato/real-time-monitoring-fo
 git -C "$tmp" fetch --depth 1 origin "$SHA"
 git -C "$tmp" checkout --detach "$SHA"
 test "$(git -C "$tmp" rev-parse HEAD)" = "$SHA"
+(cd "$tmp" && npm ci && npm run build)
 ln -s "$SHARED/.env" "$tmp/.env"
 rm -rf "$tmp/data"
 ln -s "$SHARED/data" "$tmp/data"
-(cd "$tmp" && npm ci && npm run build)
 mv "$tmp" "$release"
 ```
 
 - [ ] **Step 3: Add atomic switch, health checks, and rollback trap**
 
-Record the old target, switch only after build, reload PM2, then poll local and public URLs.
-The error trap must restore the old target after the switch and verify local recovery.
+Require the migration marker and a valid current release before ordinary deploy. Record the old target, switch only after build, restart all five PM2 targets, verify unique/online/current cwd, then poll local and public URLs. The error trap must restore and verify all five old targets plus local/public health.
 
 ```bash
 old="$(readlink -f "$CURRENT" 2>/dev/null || true)"
@@ -279,7 +278,7 @@ rollback() {
   code=$?
   if (( switched )) && [[ -n "$old" && -d "$old" ]]; then
     ln -sfn "$old" "$CURRENT"
-    pm2 reload ecosystem.config.cjs --only perp-dashboard --update-env
+    pm2 startOrRestart ecosystem.config.cjs --update-env
     curl --fail --silent --show-error --max-time 10 http://127.0.0.1:3000/ >/dev/null
   fi
   exit "$code"
@@ -289,7 +288,7 @@ trap rollback ERR
 ln -sfn "$release" "$CURRENT"
 switched=1
 cd "$CURRENT"
-pm2 reload ecosystem.config.cjs --only perp-dashboard --update-env
+pm2 startOrRestart ecosystem.config.cjs --update-env
 for _ in {1..12}; do
   curl --fail --silent --max-time 5 http://127.0.0.1:3000/ >/dev/null && break
   sleep 5
@@ -471,7 +470,7 @@ must not be merged automatically, and `.env` plus runtime data live under `share
 
 Include commands to inspect GitHub Actions, SSM command output, `readlink -f current`, PM2,
 local health, public health, and the legacy checkout. Include an emergency manual rollback
-that switches `current` to `previous` and reloads only the dashboard first.
+that switches `current` to `previous`, restores all five PM2 targets, and verifies PM2 plus local/public health.
 
 - [ ] **Step 3: Run documentation and build verification**
 

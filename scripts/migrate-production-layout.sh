@@ -20,6 +20,7 @@ readonly UNTRACKED_ARCHIVE="$APP_ROOT/legacy-code-untracked-20260804.tar"
 readonly UNTRACKED_CHECKSUM="$UNTRACKED_ARCHIVE.sha256"
 readonly LOCAL_HEALTH_URL="${LOCAL_HEALTH_URL:-http://127.0.0.1:3000/}"
 readonly PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL:-https://data.dvcapital.xyz/}"
+readonly LOCAL_HEALTH_BUDGET_SECONDS=57
 readonly PM2_TARGETS=(perp-dashboard funding-collector arbitrage-collector staking-collector positions-collector)
 
 fail() { echo "migration failed: $*" >&2; exit 1; }
@@ -61,10 +62,10 @@ data_manifest() {
   done < <(find "$root" -type f -print | LC_ALL=C sort)
 }
 
-pm2_verify_current() {
-  local jlist="$1"
+pm2_verify_cwd() {
+  local jlist="$1" expected_cwd="$2"
   pm2 jlist >"$jlist"
-  node - "$jlist" "$CURRENT" "${PM2_TARGETS[@]}" <<'NODE'
+  node - "$jlist" "$expected_cwd" "${PM2_TARGETS[@]}" <<'NODE'
 const fs = require('fs');
 const [file, current, ...names] = process.argv.slice(2);
 const apps = JSON.parse(fs.readFileSync(file));
@@ -76,6 +77,38 @@ for (const name of names) {
   if (!env || env.pm_cwd !== current || env.status !== 'online') process.exit(1);
 }
 NODE
+}
+
+pm2_verify_current() { pm2_verify_cwd "$1" "$CURRENT"; }
+
+pm2_verify_snapshot() {
+  local actual="$1" expected="$2"
+  pm2 jlist >"$actual"
+  node - "$actual" "$expected" "${PM2_TARGETS[@]}" <<'NODE'
+const fs = require('fs');
+const [actualFile, expectedFile, ...names] = process.argv.slice(2);
+const read = (file) => JSON.parse(fs.readFileSync(file));
+const envOf = (app) => app.pm2_env ?? app;
+for (const name of names) {
+  const actual = read(actualFile).filter((app) => envOf(app).name === name);
+  const expected = read(expectedFile).filter((app) => envOf(app).name === name);
+  if (actual.length !== 1 || expected.length !== 1) process.exit(1);
+  const a = envOf(actual[0]), e = envOf(expected[0]);
+  if (a.status !== 'online' || a.pm_cwd !== e.pm_cwd) process.exit(1);
+}
+NODE
+}
+
+wait_for_local_health() {
+  local deadline=$(( $(date +%s) + LOCAL_HEALTH_BUDGET_SECONDS )) attempt remaining timeout
+  for ((attempt = 1; attempt <= 12; attempt += 1)); do
+    remaining=$(( deadline - $(date +%s) )); (( remaining > 0 )) || break
+    timeout=2; (( remaining >= timeout )) || timeout="$remaining"
+    curl --fail --silent --show-error --max-time "$timeout" "$LOCAL_HEALTH_URL" >/dev/null && return 0
+    (( attempt < 12 )) || break
+    sleep 3
+  done
+  return 1
 }
 
 build_target_snapshot() {
@@ -211,7 +244,14 @@ cleanup() {
   if (( ! completed )); then
     if (( collectors_stopped )) && [[ -f "$runtime_snapshot" ]]; then
       pm2 delete "${PM2_TARGETS[@]}" || true
-      pm2 startOrRestart "$runtime_snapshot" --update-env || echo 'unable to restore migration PM2 targets' >&2
+      if pm2 startOrRestart "$runtime_snapshot" --update-env \
+        && pm2_verify_snapshot "$jlist_after" "$jlist_before" \
+        && wait_for_local_health \
+        && curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null; then
+        :
+      else
+        echo 'unable to restore and verify migration PM2 targets' >&2
+      fi
     fi
     if (( pm2_state_initialized && pm2_dump_modified )); then
       restore_original_dump || echo 'unable to restore the original PM2 dump' >&2
@@ -284,7 +324,7 @@ chmod 0750 "$SHARED" "$SHARED_DATA"
 shared_manifest_after_final="$(data_manifest "$SHARED_DATA")"
 [[ "$legacy_manifest_before_final" == "$shared_manifest_after_final" ]] || fail 'runtime data manifest mismatch after final rsync'
 pm2 startOrRestart "$CURRENT/ecosystem.config.cjs" --update-env
-curl --fail --silent --show-error --max-time 10 "$LOCAL_HEALTH_URL" >/dev/null
+wait_for_local_health || fail 'local health check failed after PM2 switch'
 curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null
 pm2_verify_current "$jlist_after" || fail 'PM2 targets did not switch to current'
 merge_target_dump "$jlist_after" "$dump_tmp"

@@ -36,6 +36,7 @@ make_fixture() {
   fixture="$(mktemp -d)"
   mkdir -p "$fixture/bin" "$fixture/app/releases" "$fixture/app/shared/data"
   : >"$fixture/app/shared/.env"
+  printf '{"schema":1}\n' >"$fixture/app/shared/production-layout-migration-v1.json"
 
   cat >"$fixture/bin/flock" <<'EOF'
 #!/usr/bin/env bash
@@ -76,9 +77,19 @@ if [[ "${NPM_ASSERT_SHARED:-0}" == 1 ]]; then
 fi
 [[ "${NPM_FAIL:-0}" != 1 ]]
 EOF
-  cat >"$fixture/bin/pm2" <<'EOF'
+cat >"$fixture/bin/pm2" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$1" == jlist ]]; then
+  calls=0
+  [[ -f "$PM2_CALLS_FILE" ]] && calls="$(cat "$PM2_CALLS_FILE")"
+  node - "$CURRENT_CWD" "$calls" <<'NODE'
+const [cwd, calls] = process.argv.slice(2);
+const names = ['perp-dashboard','funding-collector','arbitrage-collector','staking-collector','positions-collector'];
+console.log(JSON.stringify(names.map((name) => ({pm2_env:{name,pm_cwd:cwd,status:(process.env.ERRORED_COLLECTOR==='1'||(process.env.ROLLBACK_ERRORED==='1'&&Number(calls)>=3))&&name==='funding-collector'?'errored':'online'}}))));
+NODE
+  exit 0
+fi
 calls=0
 [[ -f "$PM2_CALLS_FILE" ]] && calls="$(cat "$PM2_CALLS_FILE")"
 calls=$((calls + 1))
@@ -96,6 +107,10 @@ if [[ "$url" == http://127.0.0.1:3000/* && "${LOCAL_FAIL:-0}" == 1 ]]; then
 fi
 if [[ "$url" == https://data.dvcapital.xyz/* && "${PUBLIC_FAIL:-0}" == 1 ]]; then
   exit 1
+fi
+if [[ "$url" == https://data.dvcapital.xyz/* && "${PUBLIC_FAIL_ONCE:-0}" == 1 ]]; then
+  count=0; [[ -f "$PUBLIC_CALLS_FILE" ]] && count="$(cat "$PUBLIC_CALLS_FILE")"; count=$((count + 1)); printf '%s\n' "$count" >"$PUBLIC_CALLS_FILE"
+  (( count > 1 )) || exit 1
 fi
 exit 0
 EOF
@@ -145,6 +160,8 @@ run_deploy() {
   FIND_ARGUMENT_LOG="$fixture/find-arguments.log" \
   MV_CALLS_FILE="$fixture/mv-calls" \
   EXPECTED_SHARED="$fixture/app/shared" \
+  CURRENT_CWD="$fixture/app/current" \
+  PUBLIC_CALLS_FILE="$fixture/public-calls" \
   "$@" bash "$script" "$sha"
 }
 
@@ -158,6 +175,8 @@ run_prepare() {
   FIND_ARGUMENT_LOG="$fixture/find-arguments.log" \
   MV_CALLS_FILE="$fixture/mv-calls" \
   EXPECTED_SHARED="$fixture/app/shared" \
+  CURRENT_CWD="$fixture/app/current" \
+  PUBLIC_CALLS_FILE="$fixture/public-calls" \
   bash "$script" --prepare-only "$sha"
 }
 
@@ -169,6 +188,20 @@ if PATH="$fixture/bin:$PATH" APP_ROOT="$wrong_user_app" EXPECTED_USER=definitely
   fail 'incorrect deployment user unexpectedly succeeded'
 fi
 assert_absent "$wrong_user_app"
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+old="$fixture/app/releases/old"; mkdir -p "$old"; ln -s "$old" "$fixture/app/current"
+if run_deploy "$fixture" env ERRORED_COLLECTOR=1; then fail 'errored collector unexpectedly passed deployment verification'; fi
+assert_link "$fixture/app/current" "$old"
+[[ -d "$fixture/app/releases/$sha" ]] || fail 'collector verification failure was deleted without a verified rollback'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+old="$fixture/app/releases/old"; mkdir -p "$old"; ln -s "$old" "$fixture/app/current"
+if run_deploy "$fixture" env PUBLIC_FAIL_ONCE=1 ROLLBACK_ERRORED=1; then fail 'rollback collector verification failure unexpectedly succeeded'; fi
+assert_link "$fixture/app/current" "$old"
+[[ -d "$fixture/app/releases/$sha" ]] || fail 'failed release was deleted despite an errored rollback collector'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
@@ -227,6 +260,9 @@ assert_absent "$fixture/app/current"
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
+old="$fixture/app/releases/old"
+mkdir -p "$old"
+ln -s "$old" "$fixture/app/current"
 run_deploy "$fixture" env NPM_ASSERT_SHARED=1
 [[ "$(readlink "$fixture/app/releases/$sha/.env")" == "$fixture/app/shared/.env" ]] || fail 'release .env is not shared'
 [[ "$(readlink "$fixture/app/releases/$sha/data")" == "$fixture/app/shared/data" ]] || fail 'release data is not shared'
@@ -235,9 +271,15 @@ grep -Fq '"deployed_at"' "$fixture/app/releases/$sha/.deployment-success.json" |
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
+old="$fixture/app/releases/old"
+mkdir -p "$old"
+ln -s "$old" "$fixture/app/current"
 run_deploy "$fixture"
 logs_before="$(find "$fixture/app/shared/deploy-logs" -type f | wc -l | tr -d ' ')"
-run_deploy "$fixture"
+rerun_output="$(run_deploy "$fixture")"
+for milestone in "DEPLOY_SHA=$sha" 'DEPLOY_PM2=online' 'DEPLOY_LOCAL_HEALTH=ok' 'DEPLOY_PUBLIC_HEALTH=ok'; do
+  grep -Fxq "$milestone" <<<"$rerun_output" || fail "same-SHA rerun omitted milestone: $milestone"
+done
 logs_after="$(find "$fixture/app/shared/deploy-logs" -type f | wc -l | tr -d ' ')"
 [[ "$logs_after" == $((logs_before + 1)) ]] || fail 'same-SHA rerun was not idempotent with a unique log'
 [[ "$(pm2_calls "$fixture")" == 3 ]] || fail 'same-SHA rerun did not verify the five-process deployment'
@@ -270,7 +312,7 @@ assert_link "$fixture/app/current" "$old"
 [[ "$(grep -Fc -- '--max-time 2 http://127.0.0.1:3000/' "$fixture/commands.log")" == 24 ]] || fail 'deploy and rollback did not use bounded local-health polling'
 [[ "$(grep -Fc 'sleep 3' "$fixture/commands.log")" == 22 ]] || fail 'local health did not use the bounded three-second retry interval'
 ! grep -Fq 'https://data.dvcapital.xyz/' "$fixture/commands.log" || fail 'public health ran after local health failed'
-assert_absent "$fixture/app/releases/$sha"
+[[ -d "$fixture/app/releases/$sha" ]] || fail 'failed release was deleted before rollback health recovered'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
@@ -284,7 +326,7 @@ assert_link "$fixture/app/current" "$old"
 [[ "$(pm2_calls "$fixture")" == 3 ]] || fail 'rollback recovery failure did not invoke PM2 exactly three times'
 [[ "$(grep -Fc 'https://data.dvcapital.xyz/' "$fixture/commands.log")" == 2 ]] || fail 'rollback did not verify public health'
 assert_absent "$fixture/app/releases/.$sha.tmp"
-assert_absent "$fixture/app/releases/$sha"
+[[ -d "$fixture/app/releases/$sha" ]] || fail 'failed release was deleted after rollback public health failed'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
@@ -308,7 +350,7 @@ if run_deploy "$fixture" env PUBLIC_FAIL=1 MV_MOVE_THEN_FAIL_AT=4; then
 fi
 assert_link "$fixture/app/current" "$old"
 assert_link "$fixture/app/previous" "$old"
-assert_absent "$fixture/app/releases/$sha"
+[[ -d "$fixture/app/releases/$sha" ]] || fail 'failed release was deleted after rollback verification failed'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
@@ -340,11 +382,12 @@ assert_absent "$fixture/app/releases/$sha"
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
-if run_deploy "$fixture" env PUBLIC_FAIL=1; then
-  fail 'first-deployment public health failure unexpectedly succeeded'
+rm -f "$fixture/app/shared/production-layout-migration-v1.json"
+if run_deploy "$fixture"; then
+  fail 'ordinary deployment before migration unexpectedly succeeded'
 fi
-assert_link "$fixture/app/current" "$fixture/app/releases/$sha"
-[[ -d "$fixture/app/releases/$sha" ]] || fail 'first-deployment failure deleted the current release'
+[[ "$(pm2_calls "$fixture")" == 0 ]] || fail 'pre-migration deployment touched PM2'
+assert_absent "$fixture/app/releases/$sha"
 assert_absent "$fixture/app/previous"
 rm -rf "$fixture"
 

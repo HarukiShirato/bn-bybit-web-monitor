@@ -149,18 +149,18 @@ EC2 实例 Role 只补充成为 SSM Managed Node 所需的最小权限。不得�
 2. 使用 `flock` 获取部署锁；无法获取则失败，不并行部署；
 3. 创建临时 release 目录；
 4. 从 GitHub 获取精确 SHA，验证 `HEAD` 与输入完全一致；
-5. 链接共享 `.env` 和运行数据目录；
-6. 执行 `npm ci`；
-7. 执行 `npm run build`；
+5. 执行 `npm ci`；
+6. 执行 `npm run build`；
+7. 构建成功后才链接共享 `.env` 和运行数据目录；
 8. 记录旧 `current` 为回滚目标；
 9. 原子切换 `current`；
-10. 执行 `pm2 reload perp-dashboard --update-env`；
+10. 停止四个 collector，再用 `pm2 startOrRestart ecosystem.config.cjs --update-env` 整体切换五个进程；
 11. 轮询 `http://127.0.0.1:3000/`，最多 60 秒；
 12. 检查公网 `https://data.dvcapital.xyz/`；
 13. 成功后保存部署元数据并清理旧 release；
-14. 健康检查失败时切回旧 `current`，再次 reload，并验证旧版本恢复。
+14. 失败时切回旧 `current`，整体恢复五个进程，验证五者唯一、online、cwd=current，并验证本机轮询与公网健康；完全恢复后才删除失败 release。
 
-在构建完成前，不停止、不 reload 当前生产进程。
+普通部署在 migration marker 或有效 `current` 缺失时立即失败，只允许 `--prepare-only`。在构建完成前，不停止生产进程、不切换链接，也不链接生产 `.env`。
 
 ## 8. 数据与现场修改迁移
 
@@ -186,7 +186,7 @@ EC2 实例 Role 只补充成为 SSM Managed Node 所需的最小权限。不得�
 - Dashboard 的 cwd 为 `/home/ec2-user/apps/perp-dashboard/current`；
 - 各 collector 的代码来自 `current/scripts`；
 - 各 collector 的数据输出进入 `shared/data`；
-- reload 时尽量保持 Dashboard 可用；
+- Dashboard 与四个 collector 作为同一个发布单元切换和回退；
 - collector 切换版本时避免两份进程同时写同一个数据文件。
 
 首次迁移需要安排一个短维护窗口，顺序停止旧 collector、切换路径、启动新 collector。
@@ -197,7 +197,7 @@ Dashboard 的版本构建阶段不需要停机。
 - GitHub Runner 构建失败：不发送 SSM 命令；
 - SSM 不可达或超时：线上版本不变；
 - EC2 构建失败：删除失败 release，线上版本不变；
-- PM2 reload 后本机健康失败：自动切回旧版本；
+- 五进程切换或 PM2/健康验证失败：自动切回旧版本并完整验证旧五进程；
 - 本机正常但公网异常：自动回滚，并保留 Cloudflare 日志线索；
 - 回滚也失败：工作流失败，保留 current/previous 指针和完整日志，不继续尝试；
 - 连续 push：按顺序部署，不取消已经开始的生产发布。

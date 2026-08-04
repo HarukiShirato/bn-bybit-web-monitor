@@ -151,8 +151,17 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 url="${@: -1}"
+printf '%s\n' "$url" >>"$CURL_LOG"
+if [[ "$url" == http://127.0.0.1:3000/* && -n "${LOCAL_FAILS_BEFORE_SUCCESS:-}" ]]; then
+  count=0; [[ -f "$LOCAL_CURL_COUNT" ]] && count="$(cat "$LOCAL_CURL_COUNT")"; count=$((count + 1)); printf '%s\n' "$count" >"$LOCAL_CURL_COUNT"
+  (( count > LOCAL_FAILS_BEFORE_SUCCESS )) || exit 1
+fi
 if [[ "$url" == http://127.0.0.1:3000/* && "${FAIL_LOCAL_HEALTH:-0}" == 1 ]]; then exit 1; fi
 if [[ "$url" == https://data.dvcapital.xyz/* && "${FAIL_PUBLIC_HEALTH:-0}" == 1 ]]; then exit 1; fi
+EOF
+  cat >"$fixture/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
 EOF
   cat >"$fixture/bin/tar" <<'EOF'
 #!/usr/bin/env bash
@@ -186,6 +195,8 @@ run_migration() {
   GIT_LOG="$fixture/git.log" \
   RSYNC_LOG="$fixture/rsync.log" \
   TAR_LOG="$fixture/tar.log" \
+  CURL_LOG="$fixture/curl.log" \
+  LOCAL_CURL_COUNT="$fixture/local-curl-count" \
   CURRENT_CWD="$fixture/app/current" \
   EXPECTED_USER="${EXPECTED_USER_TEST:-$(id -un)}" \
   COLLECTOR_STOP_MARKER="$fixture/collectors-stopped" \
@@ -248,6 +259,11 @@ const targets = (dump.apps ?? dump).filter((app) => names.has(app.name));
 if (targets.length !== names.size || targets.some((app) => app.pm_cwd !== current || app.status !== 'online' || !app.pm_exec_path || !app.env)) process.exit(1);
 NODE
 }
+
+fixture="$(make_fixture)"
+run_migration "$fixture" env LOCAL_FAILS_BEFORE_SUCCESS=2
+[[ "$(grep -Fc 'http://127.0.0.1:3000/' "$fixture/curl.log")" == 3 ]] || fail 'cold migration did not poll local health until ready'
+rm -rf -- "$fixture"
 
 fixture="$(make_fixture)"
 run_migration "$fixture"

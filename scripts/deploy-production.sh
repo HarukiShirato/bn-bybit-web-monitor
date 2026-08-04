@@ -16,6 +16,7 @@ readonly LOCAL_HEALTH_URL="${LOCAL_HEALTH_URL:-http://127.0.0.1:3000/}"
 readonly PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL:-https://data.dvcapital.xyz/}"
 readonly LOCAL_HEALTH_BUDGET_SECONDS=57
 readonly DEPLOY_LOG_DIR="$SHARED/deploy-logs"
+readonly MIGRATION_MARKER="$SHARED/production-layout-migration-v1.json"
 readonly PM2_TARGETS=(perp-dashboard funding-collector arbitrage-collector staking-collector positions-collector)
 
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid git SHA" >&2; exit 64; }
@@ -69,6 +70,25 @@ successful_release_candidate() {
   [[ "$(dirname "$candidate_real")" == "$RELEASES_REAL" ]] || return 1
   [[ -f "$candidate_real/.deployment-success.json" ]] || return 1
   printf '%s\n' "$candidate_real"
+}
+
+verify_pm2_current() {
+  local state="$APP_ROOT/.pm2-deploy-state.$$"
+  if ! pm2 jlist >"$state"; then rm -f -- "$state"; return 1; fi
+  node - "$state" "$CURRENT" "${PM2_TARGETS[@]}" <<'NODE'
+const fs = require('fs');
+const [file, cwd, ...names] = process.argv.slice(2);
+const apps = JSON.parse(fs.readFileSync(file));
+const envOf = (app) => app.pm2_env ?? app;
+for (const name of names) {
+  const matches = apps.filter((app) => envOf(app).name === name);
+  const env = matches.length === 1 ? envOf(matches[0]) : null;
+  if (!env || env.status !== 'online' || env.pm_cwd !== cwd) process.exit(1);
+}
+NODE
+  local status=$?
+  rm -f -- "$state"
+  return "$status"
 }
 
 switch_link() {
@@ -128,13 +148,16 @@ cleanup_failed_deployment() {
         fi
         current_after_rollback="$(resolve_path "$CURRENT" 2>/dev/null || true)"
         if [[ "$current_after_rollback" == "$old" && -d "$current_after_rollback" ]]; then
-          remove_failed_release=1
           if ! (cd "$CURRENT" && pm2 startOrRestart ecosystem.config.cjs --update-env); then
+            rollback_ok=0
+          elif ! verify_pm2_current; then
             rollback_ok=0
           elif ! wait_for_local_health; then
             rollback_ok=0
           elif ! curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null; then
             rollback_ok=0
+          else
+            remove_failed_release=1
           fi
         else
           rollback_ok=0
@@ -206,12 +229,21 @@ wait_for_local_health() {
   return 1
 }
 
+if (( ! PREPARE_ONLY )); then
+  [[ -f "$MIGRATION_MARKER" ]] || fail_deployment 'production layout migration is incomplete; only --prepare-only is allowed'
+  [[ -d "$CURRENT" ]] || fail_deployment 'current release is missing or invalid; only --prepare-only is allowed'
+  current_real="$(resolve_path "$CURRENT" 2>/dev/null || true)"
+  [[ -n "$current_real" && "$(dirname "$current_real")" == "$RELEASES_REAL" ]] || fail_deployment 'current must target a release; only --prepare-only is allowed'
+fi
+
 if [[ -d "$release" && -f "$release/.deployment-success.json" ]]; then
   if (( PREPARE_ONLY )); then echo 'release already prepared'; completed=1; exit 0; fi
   [[ "$(resolve_path "$CURRENT" 2>/dev/null || true)" == "$(resolve_path "$release")" ]] || fail_deployment 'successful release exists but is not current'
   (cd "$CURRENT" && pm2 startOrRestart ecosystem.config.cjs --update-env) || fail_deployment 'same-SHA PM2 verification failed'
+  verify_pm2_current || fail_deployment 'same-SHA PM2 verification failed'
   wait_for_local_health || fail_deployment 'same-SHA local health failed'
   curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null || fail_deployment 'same-SHA public health failed'
+  printf 'DEPLOY_PM2=online\nDEPLOY_LOCAL_HEALTH=ok\nDEPLOY_PUBLIC_HEALTH=ok\n' >&3
   completed=1
   echo 'deployment already complete and verified'
   exit 0
@@ -254,6 +286,7 @@ switched=1
 
 cd "$CURRENT"
 pm2 startOrRestart ecosystem.config.cjs --update-env || fail_deployment 'pm2-switch'
+verify_pm2_current || fail_deployment 'PM2 targets are not online from current'
 printf 'DEPLOY_PM2=online\n' >&3
 wait_for_local_health || fail_deployment 'local health check failed'
 printf 'DEPLOY_LOCAL_HEALTH=ok\n' >&3

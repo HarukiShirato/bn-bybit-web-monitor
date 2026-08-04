@@ -30,12 +30,17 @@ set -Eeuo pipefail
 SHA='替换为 master 上的完整 40 位 SHA'
 APP_ROOT=/home/ec2-user/apps/perp-dashboard
 deploy_script="$APP_ROOT/shared/bin/deploy-production-$SHA.sh"
+install -d -m 0755 "$APP_ROOT/shared/bin"
+curl --fail --silent --show-error --location \
+  "https://raw.githubusercontent.com/HarukiShirato/real-time-monitoring-for-perpetual-contracts/$SHA/scripts/deploy-production.sh" \
+  --output "$deploy_script"
+chmod 0755 "$deploy_script"
 "$deploy_script" --prepare-only "$SHA"
 PREPARED_SHA="$SHA" "$APP_ROOT/releases/$SHA/scripts/migrate-production-layout.sh"
 "$deploy_script" "$SHA"
 ```
 
-第一步只完成 `npm ci`、构建和 prepared marker，不切换 `current`、不触碰 PM2，也不会把生产 `.env` 暴露给构建；第二步复制旧目录的 `.env`/数据、建立 `current` 并整体切换五个 PM2 进程；第三步是同 SHA 幂等验证。成功标志是第三步退出码为 0，且本机与公网健康检查均通过。迁移 marker 存在后，后续只走正常 GitHub Actions 发布。
+下载 URL、prepare 参数和 release 路径绑定同一个精确 SHA。第一步只构建并写 prepared marker，不切换 `current`、不触碰 PM2，也不向构建暴露生产 `.env`；第二步迁移并整体切换五个 PM2 进程；第三步做同 SHA 幂等验证。普通 workflow 在 migration marker 或有效 `current` 建立前会立即失败，不停止 PM2、不切换链接。
 
 ## 正常发布与验收
 
