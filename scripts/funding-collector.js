@@ -86,11 +86,18 @@ async function getBinanceSymbols() {
 
 let binanceIntervals = {};
 
+/**
+ * 结算间隔取**最近**若干个点的中位数。
+ * 原来取的是数组最前面 6 个点（数据升序存放，也就是最老的 6 个），
+ * 交易所把某个合约从 1h 改成 4h 之后，这里会一直停在旧频率上，
+ * 既误导年化计算，也让下面的轮询频率跟不上。
+ */
 function detectInterval(rates) {
   if (!rates || rates.length < 3) return 8;
+  const tail = rates.slice(-13);
   const diffs = [];
-  for (let i = 1; i < Math.min(rates.length, 6); i++) {
-    diffs.push((rates[i].time - rates[i - 1].time) / 3600000);
+  for (let i = 1; i < tail.length; i++) {
+    diffs.push((tail[i].time - tail[i - 1].time) / 3600000);
   }
   diffs.sort((a, b) => a - b);
   const median = diffs[Math.floor(diffs.length / 2)];
@@ -108,28 +115,28 @@ async function collectBinance() {
     return;
   }
 
-  const hour = new Date().getUTCHours();
-  const hasIntervals = Object.keys(binanceIntervals).length > 0;
-  let symbols;
-  if (!hasIntervals) {
-    symbols = allSymbols;
-    console.log('[collector] Binance: full fetch (initial, ' + allSymbols.length + ' symbols)');
-  } else {
-    symbols = allSymbols.filter(sym => {
-      const interval = binanceIntervals[sym] || 8;
-      if (interval === 1) return true;
-      if (interval === 4) return hour % 4 === 0;
-      return hour % 8 === 0;
-    });
-    const counts = { '1h': 0, '4h': 0, '8h': 0 };
-    for (const sym of symbols) {
-      const iv = binanceIntervals[sym] || 8;
-      if (iv === 1) counts['1h']++;
-      else if (iv === 4) counts['4h']++;
-      else counts['8h']++;
-    }
-    console.log('[collector] Binance: ' + symbols.length + '/' + allSymbols.length + ' symbols this run (1h:' + counts['1h'] + ' 4h:' + counts['4h'] + ' 8h:' + counts['8h'] + ') hour=' + hour);
+  /* 按"距上次拿到的那笔结算已经过去多久"决定这轮查谁。
+   * 原来是看 UTC 整点（8h 的币只在 hour%8===0 那一轮采），一轮没采成就得再等
+   * 8 小时，连续错几次就是 30 小时的空档 —— 实测 88 个合约卡在这上面。
+   * 换成跟 Aster 一样的到点即查，漏掉的下一轮自己就补回来了。 */
+  const now = Date.now();
+  const stale = allSymbols.filter(sym => {
+    const existing = store.binance[sym];
+    const lastTime = getLatestTime(existing);
+    if (lastTime === 0) return true;                    // 首次，回补 30 天
+    if (!existing || existing.length < 3) return true;  // 数据太少，还在积累
+    const interval = binanceIntervals[sym] || detectInterval(existing);
+    return now - lastTime >= interval * 3600 * 1000 * 0.9;
+  });
+  const symbols = stale;
+  const counts = { '1h': 0, '4h': 0, '8h': 0 };
+  for (const sym of symbols) {
+    const iv = binanceIntervals[sym] || 8;
+    if (iv === 1) counts['1h']++;
+    else if (iv === 4) counts['4h']++;
+    else counts['8h']++;
   }
+  console.log('[collector] Binance: ' + symbols.length + '/' + allSymbols.length + ' symbols due (1h:' + counts['1h'] + ' 4h:' + counts['4h'] + ' 8h:' + counts['8h'] + ')');
 
   let success = 0, fail = 0, newRecords = 0;
   for (const symbol of symbols) {
@@ -183,26 +190,24 @@ async function collectBybit() {
     return;
   }
 
-  const hour = new Date().getUTCHours();
-  const hasBybitData = Object.keys(store.bybit).length > 0;
-  let due;
-  if (!hasBybitData) {
-    due = symbolsData;
-    console.log('[collector] Bybit: full fetch (initial, ' + symbolsData.length + ' symbols)');
-  } else {
-    due = symbolsData.filter(({ intervalHours }) => {
-      if (intervalHours <= 1) return true;
-      if (intervalHours <= 4) return hour % 4 === 0;
-      return hour % 8 === 0;
-    });
-    const counts = { '1h': 0, '4h': 0, '8h': 0 };
-    for (const { intervalHours } of due) {
-      if (intervalHours <= 1) counts['1h']++;
-      else if (intervalHours <= 4) counts['4h']++;
-      else counts['8h']++;
-    }
-    console.log('[collector] Bybit: ' + due.length + '/' + symbolsData.length + ' symbols this run (1h:' + counts['1h'] + ' 4h:' + counts['4h'] + ' 8h:' + counts['8h'] + ') hour=' + hour);
+  /* 同 Binance：改成到点即查，不再看 UTC 整点。
+   * Bybit 的结算间隔是 instruments-info 自报的，比推断可靠，直接拿来定轮询频率。 */
+  const now = Date.now();
+  const due = symbolsData.filter(({ symbol, intervalHours }) => {
+    const entry = store.bybit[symbol];
+    const rates = entry && entry.rates;
+    const lastTime = getLatestTime(rates);
+    if (lastTime === 0) return true;
+    if (!rates || rates.length < 3) return true;
+    return now - lastTime >= (intervalHours || 8) * 3600 * 1000 * 0.9;
+  });
+  const counts = { '1h': 0, '4h': 0, '8h': 0 };
+  for (const { intervalHours } of due) {
+    if (intervalHours <= 1) counts['1h']++;
+    else if (intervalHours <= 4) counts['4h']++;
+    else counts['8h']++;
   }
+  console.log('[collector] Bybit: ' + due.length + '/' + symbolsData.length + ' symbols due (1h:' + counts['1h'] + ' 4h:' + counts['4h'] + ' 8h:' + counts['8h'] + ')');
 
   let success = 0, fail = 0, newRecords = 0;
   for (const { symbol, intervalHours } of due) {
