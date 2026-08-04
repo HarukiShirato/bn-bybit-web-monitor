@@ -27,16 +27,18 @@ fail() { echo "migration failed: $*" >&2; exit 1; }
 canonical_path() {
   local candidate="$1"
   local parent
-  local -a suffix=()
+  local index
+  local -a suffix
+  suffix=()
 
   if realpath -m "$candidate" 2>/dev/null; then return 0; fi
   while [[ ! -e "$candidate" ]]; do
-    suffix=("$(basename "$candidate")" "${suffix[@]:-}")
+    suffix+=("$(basename "$candidate")")
     candidate="$(dirname "$candidate")"
   done
   parent="$(realpath "$candidate")" || return 1
   if ((${#suffix[@]})); then
-    for candidate in "${suffix[@]}"; do parent="$parent/$candidate"; done
+    for ((index = ${#suffix[@]} - 1; index >= 0; index -= 1)); do parent="$parent/${suffix[index]}"; done
   fi
   printf '%s\n' "$parent"
 }
@@ -66,11 +68,12 @@ pm2_verify_current() {
 const fs = require('fs');
 const [file, current, ...names] = process.argv.slice(2);
 const apps = JSON.parse(fs.readFileSync(file));
-const nameOf = (app) => app.name ?? app.pm2_env?.name;
-const cwdOf = (app) => app.cwd ?? app.pm2_env?.pm_cwd;
+const envOf = (app) => app.pm2_env ?? app;
+const nameOf = (app) => envOf(app).name;
 for (const name of names) {
   const matches = apps.filter((app) => nameOf(app) === name);
-  if (matches.length !== 1 || cwdOf(matches[0]) !== current) process.exit(1);
+  const env = matches.length === 1 ? envOf(matches[0]) : null;
+  if (!env || env.pm_cwd !== current || env.status !== 'online') process.exit(1);
 }
 NODE
 }
@@ -111,8 +114,9 @@ const fs = require('fs');
 const [dumpFile, jlistFile, outputFile, ...names] = process.argv.slice(2);
 const targets = new Set(names);
 const current = JSON.parse(fs.readFileSync(jlistFile));
-const nameOf = (entry) => entry.name ?? entry.pm2_env?.name;
-const selected = current.filter((entry) => targets.has(nameOf(entry)));
+const envOf = (entry) => entry.pm2_env ?? entry;
+const nameOf = (entry) => envOf(entry).name;
+const selected = current.filter((entry) => targets.has(nameOf(entry))).map(envOf);
 if (selected.length !== targets.size || new Set(selected.map(nameOf)).size !== targets.size) process.exit(1);
 let original = [];
 if (fs.existsSync(dumpFile)) original = JSON.parse(fs.readFileSync(dumpFile));
@@ -125,22 +129,38 @@ fs.writeFileSync(outputFile, JSON.stringify(result, null, 2) + '\n', { mode: 0o6
 NODE
 }
 
-write_marker() {
+data_summary() {
   local manifest="$1"
-  node - "$MARKER" "$MARKER_VERSION" "$CURRENT" "$manifest" <<'NODE'
+  node - "$manifest" <<'NODE'
+const manifest = process.argv[2].trim();
+const rows = manifest ? manifest.split('\n') : [];
+let bytes = 0;
+let latestMtime = 0;
+for (const row of rows) {
+  const [, metadata = ''] = row.split('\t');
+  const [size, mtime] = metadata.split(/\s+/);
+  bytes += Number(size || 0);
+  latestMtime = Math.max(latestMtime, Number(mtime || 0));
+}
+console.log(JSON.stringify({ files: rows.length, bytes, latestMtime }));
+NODE
+}
+
+write_marker() {
+  local summary="$1"
+  node - "$MARKER" "$MARKER_VERSION" "$app_real" "$shared_real" "$summary" <<'NODE'
 const fs = require('fs');
-const [file, version, current, manifest] = process.argv.slice(2);
-fs.writeFileSync(file, JSON.stringify({ version: Number(version), current, shared: { manifest } }, null, 2) + '\n', { mode: 0o640 });
+const [file, version, appRoot, sharedRoot, initialData] = process.argv.slice(2);
+fs.writeFileSync(file, JSON.stringify({ schema: Number(version), appRoot, sharedRoot, initialData: JSON.parse(initialData) }, null, 2) + '\n', { mode: 0o640 });
 NODE
 }
 
 validate_marker() {
-  local manifest="$1"
-  node - "$MARKER" "$MARKER_VERSION" "$CURRENT" "$manifest" <<'NODE'
+  node - "$MARKER" "$MARKER_VERSION" "$app_real" "$shared_real" <<'NODE'
 const fs = require('fs');
-const [file, version, current, manifest] = process.argv.slice(2);
+const [file, version, appRoot, sharedRoot] = process.argv.slice(2);
 const marker = JSON.parse(fs.readFileSync(file));
-if (marker.version !== Number(version) || marker.current !== current || marker.shared?.manifest !== manifest) process.exit(1);
+if (marker.schema !== Number(version) || marker.appRoot !== appRoot || marker.sharedRoot !== sharedRoot || !marker.initialData) process.exit(1);
 NODE
 }
 
@@ -159,11 +179,11 @@ archive_legacy_audit() {
     ':(exclude)node_modules/**' ':(exclude).next/**' ':(exclude)**/*.pem' ':(exclude)**/*.key' \
     ':(exclude)**/*secret*' ':(exclude)**/*credential*' ':(exclude)**/*id_rsa*' >"$patch_tmp"
   chmod 0400 "$patch_tmp"; mv -f -- "$patch_tmp" "$PATCH"; sha256sum "$PATCH" >"$PATCH_CHECKSUM"; chmod 0440 "$PATCH_CHECKSUM"
-  while IFS= read -r file; do should_archive_untracked "$file" && printf '%s\n' "$file"; done \
-    < <(git -C "$legacy_real" ls-files --others --exclude-standard) >"$list_tmp"
+  while IFS= read -r -d '' file; do should_archive_untracked "$file" && printf '%s\0' "$file"; done \
+    < <(git -C "$legacy_real" ls-files --others --exclude-standard -z) >"$list_tmp"
   chmod 0400 "$list_tmp"; mv -f -- "$list_tmp" "$UNTRACKED_LIST"
   sha256sum "$UNTRACKED_LIST" >"$list_checksum_tmp"; chmod 0440 "$list_checksum_tmp"; mv -f -- "$list_checksum_tmp" "$UNTRACKED_LIST_CHECKSUM"
-  if [[ -s "$UNTRACKED_LIST" ]]; then tar -C "$legacy_real" -cf "$archive_tmp" -T "$UNTRACKED_LIST"; else tar -cf "$archive_tmp" --files-from /dev/null; fi
+  if [[ -s "$UNTRACKED_LIST" ]]; then tar -C "$legacy_real" --null --verbatim-files-from -cf "$archive_tmp" -T "$UNTRACKED_LIST"; else tar -cf "$archive_tmp" --null --verbatim-files-from -T /dev/null; fi
   chmod 0400 "$archive_tmp"; mv -f -- "$archive_tmp" "$UNTRACKED_ARCHIVE"
   sha256sum "$UNTRACKED_ARCHIVE" >"$checksum_tmp"; chmod 0440 "$checksum_tmp"; mv -f -- "$checksum_tmp" "$UNTRACKED_CHECKSUM"
 }
@@ -212,6 +232,7 @@ require_owner "$legacy_real"
 
 mkdir -p "$APP_ROOT"
 app_real="$(canonical_path "$APP_ROOT")" || fail 'cannot resolve created application root'
+shared_real="$(canonical_path "$SHARED")" || fail 'cannot resolve shared runtime root'
 [[ "$app_real" == "$app_candidate" ]] || fail 'application root changed while being created'
 [[ ! -L "$SHARED" && ! -L "$SHARED_DATA" ]] || fail 'shared runtime paths must not be symlinks during migration'
 umask 027
@@ -221,8 +242,7 @@ require_owner "$app_real"; require_owner "$SHARED"; require_owner "$SHARED_DATA"
 [[ -f "$CURRENT/ecosystem.config.cjs" ]] || fail "current ecosystem config is missing: $CURRENT/ecosystem.config.cjs"
 
 if [[ -f "$MARKER" ]]; then
-  shared_manifest="$(data_manifest "$SHARED_DATA")"
-  validate_marker "$shared_manifest" || fail 'migration marker does not match shared runtime data'
+  validate_marker || fail 'migration marker does not match the production layout'
   pm2_verify_current "$jlist_after" || fail 'PM2 targets are not running from current'
   completed=1
   echo 'production runtime layout already verified'
@@ -253,7 +273,7 @@ curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null
 pm2_verify_current "$jlist_after" || fail 'PM2 targets did not switch to current'
 merge_target_dump "$jlist_after" "$dump_tmp"
 mv -f -- "$dump_tmp" "$PM2_DUMP"
-write_marker "$shared_manifest_after_final"
+write_marker "$(data_summary "$legacy_manifest_before_final")"
 collectors_stopped=0
 completed=1
 echo 'production runtime layout migration completed'
