@@ -7,7 +7,7 @@ import { getOpenInterestMap, ExchangeOI, getVolumeMap, ExchangeVolume } from '@/
 import { getOkxRealEarnRates } from '@/lib/okxRealEarn';
 import { getStakingRewardsMap, getStakingInfoMap, getMarketCapsFromFile, getBinanceQuotaFromFile, getNaviLendingRates } from "@/lib/stakingRewards";
 import { getArbitrageMap, ArbitrageInfo } from "@/lib/arbitrageData";
-import { getCoinIconMap } from "@/lib/coinIcons";
+import { resolveIcons } from "@/lib/coinIcons";
 
 // 跳过构建时预渲染，由进程级缓存 + funding 缓存 控制刷新
 export const dynamic = 'force-dynamic';
@@ -133,8 +133,15 @@ export async function GET() {
 
     const rows: CombinedEarnRow[] = [];
 
-    // earn 表的 asset 就是币种 base，直接查图标表（失败返回空 Map，不影响主流程）
-    const coinIcons = await getCoinIconMap().catch(() => new Map<string, string>());
+    // earn 表的 asset 就是币种 base，走和 perps 同一套解析：图已经落到服务器上就发本地地址，
+    // 否则先给外链并在后台抓（币安 CDN 在部分网络下直连不通，前端会裂图）
+    const coinIcons = await resolveIcons(
+      allAssets.map(a => ({
+        symbol: a.toUpperCase(),
+        base: a.toUpperCase(),
+        fallback: marketDataMap.get(a)?.image,
+      }))
+    ).catch(() => new Map<string, string>());
 
     for (const [asset, exchMap] of assetMap.entries()) {
       // 构建 earnRates，OKX 附带真实 3d/7d

@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { FundingGrid } from '@/components/FundingHistory';
+import { CoinIcon } from '@/components/CoinIcon';
 
 export interface PerpData {
   symbol: string;
@@ -39,33 +40,6 @@ interface PerpTableProps {
 /* ── 币种图标 ──
    图标源是多层兜底的（CoinGecko → 交易所资产表 → CoinCap 静态地址），
    最后一层可能 404，这里 onError 就降级成首字母方块，不留破图。 */
-function CoinIcon({ src, label, blank }: { src?: string; label: string; blank?: boolean }) {
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => { setFailed(false); }, [src]);
-
-  // HL（尤其 builder dex 的 RWA）不显示图标，留空位保持列宽
-  if (blank) return <div className="w-6 h-6" />;
-
-  if (!src || failed) {
-    return (
-      <div className="w-6 h-6 rounded-full bg-brand-surface border border-brand-border flex items-center justify-center text-[10px] font-bold text-brand-text-secondary group-hover:border-brand-accent/30 group-hover:text-brand-accent transition-colors">
-        {label.substring(0, 1)}
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={label}
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className="w-6 h-6 rounded-full border border-brand-border/60"
-    />
-  );
-}
-
 const Countdown = ({ targetTime }: { targetTime: number }) => {
   const [timeLeft, setTimeLeft] = useState('');
 

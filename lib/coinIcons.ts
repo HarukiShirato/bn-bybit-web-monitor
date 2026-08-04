@@ -174,6 +174,8 @@ function saveSticky(map: Map<string, string>) {
 
 export interface IconRequest {
   symbol: string;
+  /** 已知的币种 base，跳过符号解析。earn 表的 asset 本身就是 base（1000SATS 不能被剥成 SATS） */
+  base?: string;
   isTradFi?: boolean;
   /** CoinGecko 已经给出的图，仅作为 Binance 之后的备选 */
   fallback?: string;
@@ -191,7 +193,7 @@ export async function resolveIcons(requests: IconRequest[]): Promise<Map<string,
   let localized = false;
 
   for (const req of requests) {
-    const base = baseOfSymbol(req.symbol);
+    const base = req.base ? req.base.toUpperCase() : baseOfSymbol(req.symbol);
     // 只接受正常的币种/股票代码，避免空 base 生成 coin_.png 这种垃圾条目
     if (!base || !/^[A-Z0-9]{1,15}$/.test(base)) continue;
 
