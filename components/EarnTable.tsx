@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState, useEffect, useCallback } from 'react';
+import { CoinIcon } from '@/components/CoinIcon';
 
 export interface EarnRate {
   exchange: string;
@@ -329,13 +330,8 @@ export default function EarnTable({ data }: EarnTableProps) {
                       {/* COIN */}
                       <td className="px-4 py-3 whitespace-nowrap pl-6">
                         <div className="flex items-center" title={item.coinName || item.asset}>
-                          {item.coinImage ? (
-                            <img src={item.coinImage} alt={item.coinName || item.asset} className="w-6 h-6 rounded-full border border-brand-border/60" />
-                          ) : (
-                            <div className="w-6 h-6 rounded-full bg-brand-surface border border-brand-border flex items-center justify-center text-[10px] font-bold text-brand-text-secondary">
-                              {item.asset.substring(0, 1)}
-                            </div>
-                          )}
+                          {/* 兜底首字母取 asset，外层 div 的 title 已经给出全名 */}
+                          <CoinIcon src={item.coinImage} label={item.asset} />
                         </div>
                       </td>
 
