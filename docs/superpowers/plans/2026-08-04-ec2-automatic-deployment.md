@@ -1,5 +1,7 @@
 # EC2 Automatic Deployment Implementation Plan
 
+> **2026-08-04 security-review amendment:** Replace arbitrary RunShellScript with the custom `PerpDashboardDeploy` document and a root-owned fixed wrapper/engine; run deployment and PM2 as `perp-dashboard`; build with an explicit environment allowlist and link `.env` only afterwards; add prepare-only migration; switch, verify, and roll back the dashboard plus all four collectors; make same-SHA retries idempotent and create unique logs only after locking.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Automatically deploy every successful push to GitHub `master` onto EC2 `i-0d3456ec595259c39`, while preserving runtime data and rolling back failed releases.

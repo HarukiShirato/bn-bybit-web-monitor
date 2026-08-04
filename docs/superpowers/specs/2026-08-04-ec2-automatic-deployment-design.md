@@ -1,7 +1,7 @@
 # Perpetual Dashboard EC2 自动部署设计
 
 **日期：** 2026-08-04  
-**状态：** 待用户书面复核  
+**状态：** 已按安全终审修订
 **目标仓库：** `HarukiShirato/real-time-monitoring-for-perpetual-contracts`  
 **生产实例：** 东京 EC2 `13.193.65.245`  
 **生产域名：** `https://data.dvcapital.xyz`
@@ -43,6 +43,8 @@
 
 采用 `GitHub Actions OIDC → AWS SSM Run Command → EC2 发布脚本`。
 
+安全终审后收窄为 `GitHub OIDC → 自定义 PerpDashboardDeploy Document → root-owned wrapper → perp-dashboard 用户的固定 engine`。workflow 只能传 40 位 `CommitSha`，不能传 shell、URL 或脚本内容；IAM 不允许 `AWS-RunShellScript`。专用 UID 由持久化 iptables owner 规则禁止访问 IMDS。engine 在无生产环境变量下构建，构建后才链接 `.env`；dashboard 与四个 collectors 作为一个切换/验证/回滚单元。
+
 不采用：
 
 - GitHub Actions 保存 EC2 SSH 私钥并直接 SSH；
@@ -58,7 +60,7 @@ OIDC 只向本仓库 `master` 分支签发短期 AWS 会话。SSM 负责向目�
 生产部署改为版本目录与共享目录分离：
 
 ```text
-/home/ec2-user/apps/perp-dashboard/
+/home/perp-dashboard/apps/perp-dashboard/
 ├── releases/
 │   └── <full-git-sha>/
 ├── current -> releases/<active-git-sha>
