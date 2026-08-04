@@ -273,45 +273,52 @@ Require the migration marker and a valid current release before ordinary deploy.
 
 ```bash
 old="$(readlink -f "$CURRENT" 2>/dev/null || true)"
-switched=0
 rollback() {
   code=$?
-  if (( switched )) && [[ -n "$old" && -d "$old" ]]; then
-    ln -sfn "$old" "$CURRENT"
-    pm2 startOrRestart ecosystem.config.cjs --update-env
-    curl --fail --silent --show-error --max-time 10 http://127.0.0.1:3000/ >/dev/null
-  fi
+  switch_link "$old" "$CURRENT"
+  (cd "$CURRENT" && pm2 startOrRestart ecosystem.config.cjs --update-env)
+  verify_pm2_current # exactly one each: dashboard + four collectors; online; cwd=current
+  wait_for_local_health # bounded by 57 seconds
+  curl --fail --silent --show-error --max-time 15 https://data.dvcapital.xyz/ >/dev/null
   exit "$code"
 }
-trap rollback ERR
-[[ -n "$old" ]] && ln -sfn "$old" "$PREVIOUS"
-ln -sfn "$release" "$CURRENT"
-switched=1
+trap rollback EXIT
+pm2 stop funding-collector arbitrage-collector staking-collector positions-collector
+switch_link "$old" "$PREVIOUS"
+switch_link "$release" "$CURRENT"
 cd "$CURRENT"
 pm2 startOrRestart ecosystem.config.cjs --update-env
-for _ in {1..12}; do
-  curl --fail --silent --max-time 5 http://127.0.0.1:3000/ >/dev/null && break
-  sleep 5
-done
+verify_pm2_current
+wait_for_local_health
 curl --fail --silent --show-error --max-time 15 https://data.dvcapital.xyz/ >/dev/null
-switched=0
-trap - ERR
+completed=1
+trap - EXIT
 ```
 
 - [ ] **Step 4: Add safe release cleanup**
 
-Sort releases by modification time, keep the newest five, and never remove the resolved
-`current` or `previous` target.
+Only consider directories containing `.deployment-success.json`. Count protected `current` and
+`previous` targets toward the total, keep at most five successful releases overall, and never
+remove either protected target. Unverified directories are retained for inspection.
 
 ```bash
-current_target="$(readlink -f "$CURRENT" 2>/dev/null || true)"
+current_target="$(readlink -f "$CURRENT")"
 previous_target="$(readlink -f "$PREVIOUS" 2>/dev/null || true)"
-mapfile -t old_releases < <(find "$RELEASES" -mindepth 1 -maxdepth 1 -type d \
-  ! -name '.*.tmp' -printf '%T@ %p\n' | sort -nr | tail -n +6 | cut -d' ' -f2-)
-for candidate in "${old_releases[@]}"; do
-  [[ "$candidate" == "$current_target" || "$candidate" == "$previous_target" ]] && continue
-  rm -rf -- "$candidate"
-done
+retained=("$current_target")
+[[ -z "$previous_target" || "$previous_target" == "$current_target" ]] || retained+=("$previous_target")
+retained_count="${#retained[@]}"
+while IFS= read -r candidate; do
+  candidate="$(successful_release_candidate "$candidate" || true)"
+  [[ -n "$candidate" ]] || continue
+  protected=0
+  for target in "${retained[@]}"; do [[ "$candidate" == "$target" ]] && protected=1; done
+  (( protected )) && continue
+  if (( retained_count < 5 )); then
+    retained+=("$candidate"); retained_count=$((retained_count + 1))
+  else
+    rm -rf -- "$candidate"
+  fi
+done < <(find "$RELEASES" -name .deployment-success.json -printf '%T@ %h\n' | sort -nr | cut -d' ' -f2-)
 ```
 
 - [ ] **Step 5: Run static and syntax tests**

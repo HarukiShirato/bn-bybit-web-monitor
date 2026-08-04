@@ -239,7 +239,6 @@ fi
 if [[ -d "$release" && -f "$release/.deployment-success.json" ]]; then
   if (( PREPARE_ONLY )); then echo 'release already prepared'; completed=1; exit 0; fi
   [[ "$(resolve_path "$CURRENT" 2>/dev/null || true)" == "$(resolve_path "$release")" ]] || fail_deployment 'successful release exists but is not current'
-  (cd "$CURRENT" && pm2 startOrRestart ecosystem.config.cjs --update-env) || fail_deployment 'same-SHA PM2 verification failed'
   verify_pm2_current || fail_deployment 'same-SHA PM2 verification failed'
   wait_for_local_health || fail_deployment 'same-SHA local health failed'
   curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null || fail_deployment 'same-SHA public health failed'

@@ -81,6 +81,7 @@ cat >"$fixture/bin/pm2" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == jlist ]]; then
+  printf '%s\n' "$*" >>"$COMMAND_LOG"
   calls=0
   [[ -f "$PM2_CALLS_FILE" ]] && calls="$(cat "$PM2_CALLS_FILE")"
   node - "$CURRENT_CWD" "$calls" <<'NODE'
@@ -276,13 +277,17 @@ mkdir -p "$old"
 ln -s "$old" "$fixture/app/current"
 run_deploy "$fixture"
 logs_before="$(find "$fixture/app/shared/deploy-logs" -type f | wc -l | tr -d ' ')"
+commands_before="$(wc -l <"$fixture/commands.log" | tr -d ' ')"
 rerun_output="$(run_deploy "$fixture")"
 for milestone in "DEPLOY_SHA=$sha" 'DEPLOY_PM2=online' 'DEPLOY_LOCAL_HEALTH=ok' 'DEPLOY_PUBLIC_HEALTH=ok'; do
   grep -Fxq "$milestone" <<<"$rerun_output" || fail "same-SHA rerun omitted milestone: $milestone"
 done
 logs_after="$(find "$fixture/app/shared/deploy-logs" -type f | wc -l | tr -d ' ')"
 [[ "$logs_after" == $((logs_before + 1)) ]] || fail 'same-SHA rerun was not idempotent with a unique log'
-[[ "$(pm2_calls "$fixture")" == 3 ]] || fail 'same-SHA rerun did not verify the five-process deployment'
+[[ "$(pm2_calls "$fixture")" == 2 ]] || fail 'same-SHA rerun mutated PM2 state'
+tail -n "+$((commands_before + 1))" "$fixture/commands.log" >"$fixture/same-sha-commands.log"
+grep -Fxq 'jlist' "$fixture/same-sha-commands.log" || fail 'same-SHA rerun did not inspect PM2 state'
+! grep -Eq '(^| )(start|startOrRestart|startOrReload|stop|reload|restart|delete)( |$)' "$fixture/same-sha-commands.log" || fail 'same-SHA rerun issued a mutating PM2 command'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
