@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 readonly SHA="${1:-}"
+readonly EXPECTED_USER="${EXPECTED_USER:-ec2-user}"
 readonly APP_ROOT="${APP_ROOT:-/home/ec2-user/apps/perp-dashboard}"
 readonly RELEASES="$APP_ROOT/releases"
 readonly CURRENT="$APP_ROOT/current"
@@ -15,6 +16,7 @@ readonly PM2_APP="${PM2_APP:-perp-dashboard}"
 readonly LOCAL_HEALTH_BUDGET_SECONDS=57
 
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid git SHA" >&2; exit 64; }
+[[ "$(id -un)" == "$EXPECTED_USER" ]] || { echo "must run as $EXPECTED_USER" >&2; exit 77; }
 
 mkdir -p "$RELEASES" "$SHARED"
 exec 9>"$LOCK_FILE"

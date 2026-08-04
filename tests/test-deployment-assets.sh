@@ -280,7 +280,7 @@ fi
 
 if require_file scripts/deploy-production.sh; then
   bash -n scripts/deploy-production.sh || fail 'deploy-production.sh has invalid Bash syntax'
-  contains_all scripts/deploy-production.sh flock 'npm ci' 'npm run build' 'pm2 reload' 'data.dvcapital.xyz'
+  contains_all scripts/deploy-production.sh flock 'npm ci' 'npm run build' 'pm2 reload' 'data.dvcapital.xyz' 'id -un' 'EXPECTED_USER'
 fi
 
 if require_file scripts/migrate-production-layout.sh; then
@@ -288,9 +288,10 @@ if require_file scripts/migrate-production-layout.sh; then
   contains_all scripts/migrate-production-layout.sh \
     'rsync -a' 'git diff' 'sha256sum' '/home/ec2-user/perp-dashboard/.env' \
     'pm2 stop funding-collector arbitrage-collector staking-collector positions-collector' \
-    'pm2 startOrRestart' 'pm2 resurrect'
-  grep -Eq '^[[:space:]]*pm2 save[[:space:]]*$' scripts/migrate-production-layout.sh || fail 'migration must use pm2 save without arguments'
-  grep -Eq '^[[:space:]]*pm2 resurrect[[:space:]]*$' scripts/migrate-production-layout.sh || fail 'migration must use pm2 resurrect without arguments'
+    'pm2 startOrRestart' 'pm2 jlist' 'production-layout-migration-v1.json'
+  if grep -Eq '^[[:space:]]*pm2 (save|resurrect)' scripts/migrate-production-layout.sh; then
+    fail 'migration must not save or resurrect the global PM2 process list'
+  fi
   if grep -Fq 'rm -rf /home/ec2-user/perp-dashboard' scripts/migrate-production-layout.sh; then
     fail 'migrate-production-layout.sh must not delete the legacy checkout'
   fi

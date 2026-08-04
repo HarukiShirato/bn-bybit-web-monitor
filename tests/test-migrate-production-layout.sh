@@ -20,10 +20,11 @@ make_fixture() {
   local legacy_root="$fixture/legacy"
   local release="$fixture/release"
   local pm2_home="$fixture/pm2-home"
-  mkdir -p "$fixture/bin" "$legacy_root/data/nested" "$release" "$pm2_home" "$app_root"
+  mkdir -p "$fixture/bin" "$legacy_root/data/nested" "$legacy_root/src" "$release" "$pm2_home" "$app_root"
   printf 'SECRET=value\n' >"$legacy_root/.env"
   printf '{"preserved":true}\n' >"$legacy_root/data/funding-history.json"
   printf 'nested history\n' >"$legacy_root/data/nested/history.txt"
+  printf 'untracked source\n' >"$legacy_root/src/untracked.js"
   cp "$root/ecosystem.config.cjs" "$release/ecosystem.config.cjs"
   ln -s "$release" "$app_root/current"
 
@@ -34,7 +35,7 @@ const names = [
   'perp-dashboard', 'funding-collector', 'arbitrage-collector', 'staking-collector', 'positions-collector',
 ];
 fs.writeFileSync(file, JSON.stringify({ apps: [
-  ...names.map((name) => ({ name, cwd: legacy, status: 'online' })),
+  ...names.map((name) => ({ name, script: name === 'perp-dashboard' ? 'npm' : `scripts/${name}.js`, cwd: legacy, status: 'online' })),
   { name: 'unrelated-worker', cwd: '/srv/unrelated', status: 'online', restarts: 7 },
 ] }, null, 2));
 NODE
@@ -56,14 +57,20 @@ NODE
   cat >"$fixture/bin/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$1" == '-C' && "$3" == 'diff' && "$4" == '--no-ext-diff' ]] || exit 2
-printf 'diff --git a/legacy.js b/legacy.js\n'
+[[ "$1" == '-C' ]] || exit 2
+printf '%s\n' "$*" >>"$GIT_LOG"
+case "$3" in
+  diff) printf 'diff --git a/staged.js b/staged.js\ndiff --git a/unstaged.js b/unstaged.js\n' ;;
+  ls-files) printf 'src/untracked.js\n.env\ndata/runtime.json\n' ;;
+  *) exit 2 ;;
+esac
 EOF
 
   cat >"$fixture/bin/rsync" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$1" == '-a' ]] || exit 2
+printf '%s\n' "$*" >>"$RSYNC_LOG"
 if [[ -f "$COLLECTOR_STOP_MARKER" && "${FAIL_FINAL_RSYNC:-0}" == 1 ]]; then
   exit 1
 fi
@@ -83,9 +90,11 @@ printf '%s\n' "$*" >>"$PM2_LOG"
 command="$1"
 shift
 case "$command" in
-  save)
-    [[ "$#" == 0 ]] || exit 2
-    cp "$PM2_STATE" "$PM2_HOME/dump.pm2"
+  jlist)
+    node - "$PM2_STATE" <<'NODE'
+const fs = require('fs');
+console.log(JSON.stringify(JSON.parse(fs.readFileSync(process.argv[2])).apps));
+NODE
     ;;
   stop)
     touch "$COLLECTOR_STOP_MARKER"
@@ -98,15 +107,24 @@ fs.writeFileSync(file, JSON.stringify(state));
 NODE
     ;;
   startOrRestart)
-    [[ "$1" == "$CURRENT_CWD/ecosystem.config.cjs" && "$2" == '--update-env' && "$#" == 2 ]] || exit 2
-    [[ "${FAIL_PM2_START:-0}" != 1 ]] || exit 1
-    node - "$PM2_STATE" "$CURRENT_CWD" <<'NODE'
+    [[ "$2" == '--update-env' && "$#" == 2 ]] || exit 2
+    [[ "$1" != "$CURRENT_CWD/ecosystem.config.cjs" || "${FAIL_PM2_START:-0}" != 1 ]] || exit 1
+    node - "$PM2_STATE" "$1" "$CURRENT_CWD" <<'NODE'
 const fs = require('fs');
-const [file, current] = process.argv.slice(2);
+const [file, configFile, current] = process.argv.slice(2);
 const names = new Set(['perp-dashboard', 'funding-collector', 'arbitrage-collector', 'staking-collector', 'positions-collector']);
 const state = JSON.parse(fs.readFileSync(file));
-for (const app of state.apps) {
-  if (names.has(app.name)) { app.cwd = current; app.status = 'online'; }
+const config = require(configFile);
+const currentConfig = configFile === `${current}/ecosystem.config.cjs`;
+for (const replacement of config.apps) {
+  if (!names.has(replacement.name)) continue;
+  let app = state.apps.find((candidate) => candidate.name === replacement.name);
+  if (!app) {
+    app = { name: replacement.name, script: replacement.script };
+    state.apps.push(app);
+  }
+  app.cwd = currentConfig ? current : replacement.cwd;
+  app.status = 'online';
 }
 fs.writeFileSync(file, JSON.stringify(state));
 NODE
@@ -119,10 +137,6 @@ const state = JSON.parse(fs.readFileSync(file));
 state.apps = state.apps.filter((app) => !names.includes(app.name));
 fs.writeFileSync(file, JSON.stringify(state));
 NODE
-    ;;
-  resurrect)
-    [[ "$#" == 0 ]] || exit 2
-    cp "$PM2_HOME/dump.pm2" "$PM2_STATE"
     ;;
   *) exit 2 ;;
 esac
@@ -148,7 +162,10 @@ run_migration() {
   PM2_HOME="$fixture/pm2-home" \
   PM2_STATE="$fixture/pm2-state.json" \
   PM2_LOG="$fixture/pm2.log" \
+  GIT_LOG="$fixture/git.log" \
+  RSYNC_LOG="$fixture/rsync.log" \
   CURRENT_CWD="$fixture/app/current" \
+  EXPECTED_USER="${EXPECTED_USER_TEST:-$(id -un)}" \
   COLLECTOR_STOP_MARKER="$fixture/collectors-stopped" \
   LOCAL_HEALTH_URL='http://127.0.0.1:3000/' \
   PUBLIC_HEALTH_URL='https://data.dvcapital.xyz/' \
@@ -184,7 +201,8 @@ assert_recovered() {
   node - "$fixture/initial-state.json" "$fixture/pm2-state.json" <<'NODE'
 const fs = require('fs');
 const [expected, actual] = process.argv.slice(2).map((file) => JSON.parse(fs.readFileSync(file)));
-if (JSON.stringify(actual) !== JSON.stringify(expected)) process.exit(1);
+const normalize = (state) => state.apps.slice().sort((a, b) => a.name.localeCompare(b.name));
+if (JSON.stringify(normalize(actual)) !== JSON.stringify(normalize(expected))) process.exit(1);
 NODE
   if [[ "$dump_expected" == absent ]]; then
     [[ ! -e "$fixture/pm2-home/dump.pm2" ]] || fail 'recovery left a dump.pm2 that did not exist before migration'
@@ -192,9 +210,8 @@ NODE
     [[ -f "$fixture/pm2-home/dump.pm2" ]] || fail 'recovery removed a pre-existing dump.pm2'
     cmp -s "$fixture/expected-original-dump.pm2" "$fixture/pm2-home/dump.pm2" || fail 'recovery changed the pre-existing PM2 dump'
   fi
-  grep -Fxq 'save' "$fixture/pm2.log" || fail 'PM2 snapshot did not use pm2 save without arguments'
-  grep -Fxq 'resurrect' "$fixture/pm2.log" || fail 'PM2 recovery did not use pm2 resurrect without arguments'
   grep -Fxq 'delete perp-dashboard funding-collector arbitrage-collector staking-collector positions-collector' "$fixture/pm2.log" || fail 'PM2 recovery did not delete only migration targets'
+  grep -Fq 'startOrRestart ' "$fixture/pm2.log" || fail 'PM2 recovery did not start the target-only snapshot'
   ! grep -Fq 'unrelated-worker' "$fixture/pm2.log" || fail 'migration directly touched an unrelated PM2 process'
 }
 
@@ -204,7 +221,7 @@ const fs = require('fs');
 const [file, current] = process.argv.slice(2);
 const names = new Set(['perp-dashboard', 'funding-collector', 'arbitrage-collector', 'staking-collector', 'positions-collector']);
 const dump = JSON.parse(fs.readFileSync(file));
-const targets = dump.apps.filter((app) => names.has(app.name));
+const targets = (dump.apps ?? dump).filter((app) => names.has(app.name));
 if (targets.length !== names.size || targets.some((app) => app.cwd !== current || app.status !== 'online')) process.exit(1);
 NODE
 }
@@ -212,6 +229,24 @@ NODE
 fixture="$(make_fixture)"
 run_migration "$fixture"
 assert_dump_targets_current "$fixture" || fail 'successful migration did not persist the current PM2 configuration'
+grep -Fxq 'src/untracked.js' "$fixture/app/legacy-code-untracked-20260804.txt" || fail 'untracked source file was not audited'
+! grep -Fq '.env' "$fixture/app/legacy-code-untracked-20260804.txt" || fail 'legacy .env was included in the untracked audit list'
+! tar -tf "$fixture/app/legacy-code-untracked-20260804.tar" | grep -Eq '(^|/)\.env$|^data/' || fail 'audit archive contains excluded runtime or secret files'
+grep -Fq 'staged.js' "$fixture/app/legacy-code-diff-20260804.patch" || fail 'staged tracked diff was not archived'
+grep -Fq 'unstaged.js' "$fixture/app/legacy-code-diff-20260804.patch" || fail 'unstaged tracked diff was not archived'
+grep -Fq 'diff HEAD --binary' "$fixture/git.log" || fail 'audit did not request staged and unstaged tracked changes from HEAD'
+grep -Fq ':(exclude).env' "$fixture/git.log" || fail 'audit did not exclude .env from tracked diff output'
+node - "$fixture/app/legacy-code-diff-20260804.patch" "$fixture/app/legacy-code-diff-20260804.patch.sha256" "$fixture/app/legacy-code-untracked-20260804.txt" "$fixture/app/legacy-code-untracked-20260804.txt.sha256" "$fixture/app/legacy-code-untracked-20260804.tar" "$fixture/app/legacy-code-untracked-20260804.tar.sha256" <<'NODE'
+const crypto = require('crypto');
+const fs = require('fs');
+for (let index = 2; index < process.argv.length; index += 2) {
+  const file = process.argv[index];
+  const checksum = process.argv[index + 1];
+  const actual = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  const expected = fs.readFileSync(checksum, 'utf8').trim().split(/\s+/)[0];
+  if (actual !== expected) process.exit(1);
+}
+NODE
 rm -f -- "$fixture/collectors-stopped"
 run_migration "$fixture"
 assert_data_manifest_matches "$fixture" || fail 'shared data manifest differs after idempotent migration'
@@ -224,6 +259,40 @@ if (targets.length !== 5 || targets.some((app) => app.cwd !== current || app.sta
 const unrelated = state.apps.find((app) => app.name === 'unrelated-worker');
 if (!unrelated || unrelated.cwd !== '/srv/unrelated' || unrelated.status !== 'online' || unrelated.restarts !== 7) process.exit(1);
 NODE
+printf 'shared growth\n' >>"$fixture/app/shared/data/funding-history.json"
+rsync_calls_before="$(wc -l < "$fixture/rsync.log" | tr -d ' ')"
+if run_migration "$fixture"; then
+  fail 'marker validation unexpectedly accepted changed shared runtime data'
+fi
+grep -Fq 'shared growth' "$fixture/app/shared/data/funding-history.json" || fail 'marker validation overwrote shared data growth'
+[[ "$(wc -l < "$fixture/rsync.log" | tr -d ' ')" == "$rsync_calls_before" ]] || fail 'marker validation ran rsync'
+rm -rf -- "$fixture"
+
+fixture="$(make_fixture present)"
+run_migration "$fixture"
+node - "$fixture/expected-original-dump.pm2" "$fixture/pm2-home/dump.pm2" <<'NODE'
+const fs = require('fs');
+const [before, after] = process.argv.slice(2).map((file) => JSON.parse(fs.readFileSync(file)));
+const find = (value) => (value.apps ?? value).find((app) => app.name === 'unrelated-worker');
+if (JSON.stringify(find(before)) !== JSON.stringify(find(after))) process.exit(1);
+NODE
+! grep -Fq 'unrelated-worker' "$fixture/pm2.log" || fail 'successful migration touched an unrelated PM2 process'
+rm -rf -- "$fixture"
+
+fixture="$(make_fixture)"
+bad_app="$fixture/must-not-exist"
+if run_migration "$fixture" env EXPECTED_USER=definitely-not-"$(id -un)" APP_ROOT="$bad_app"; then
+  fail 'migration unexpectedly ran as an incorrect user'
+fi
+[[ ! -e "$bad_app" ]] || fail 'incorrect-user migration created application directories'
+rm -rf -- "$fixture"
+
+fixture="$(make_fixture)"
+bad_app="$fixture/legacy/must-not-exist"
+if run_migration "$fixture" env APP_ROOT="$bad_app"; then
+  fail 'migration unexpectedly allowed application root inside legacy checkout'
+fi
+[[ ! -e "$bad_app" ]] || fail 'misconfigured application root modified the legacy checkout'
 rm -rf -- "$fixture"
 
 for failure in final_rsync pm2_start local_health public_health manifest; do

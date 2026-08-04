@@ -140,6 +140,7 @@ run_deploy() {
   shift
   PATH="$fixture/bin:$PATH" \
   APP_ROOT="$fixture/app" \
+  EXPECTED_USER="${EXPECTED_USER_TEST:-$(id -un)}" \
   COMMAND_LOG="$fixture/commands.log" \
   PM2_CALLS_FILE="$fixture/pm2-calls" \
   FIND_ARGUMENT_LOG="$fixture/find-arguments.log" \
@@ -149,6 +150,14 @@ run_deploy() {
 }
 
 [[ -f "$script" ]] || fail 'deployment script is missing'
+
+fixture="$(make_fixture)"
+wrong_user_app="$fixture/must-not-exist"
+if PATH="$fixture/bin:$PATH" APP_ROOT="$wrong_user_app" EXPECTED_USER=definitely-not-"$(id -un)" bash "$script" "$sha" >/dev/null 2>&1; then
+  fail 'incorrect deployment user unexpectedly succeeded'
+fi
+assert_absent "$wrong_user_app"
+rm -rf "$fixture"
 
 fixture="$(make_fixture)"
 if PATH="$fixture/bin:$PATH" APP_ROOT="$fixture/app" bash "$script" not-a-sha >/dev/null 2>&1; then
