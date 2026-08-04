@@ -36,6 +36,44 @@ async function getHlCoinMap(): Promise<Map<string, string>> {
   return map;
 }
 
+/* ── 响应缓存 ──
+   资金费最快也要 1h 才结算一次，10 分钟内重复展开同一行没有新信息可拿，
+   直接回缓存，省掉对交易所的重复请求（反复折叠/展开、多人同时看都只打一次）。
+   拿到空数组则只缓存 1 分钟：那多半是交易所临时抽风，不该被钉住十分钟。 */
+interface CacheEntry {
+  data: { time: number; rate: number }[];
+  constituents: any[];
+  expires: number;
+}
+
+const CACHE = new Map<string, CacheEntry>();
+const TTL_MS = 10 * 60 * 1000;
+const EMPTY_TTL_MS = 60 * 1000;
+const MAX_ENTRIES = 500; // HL builder dex 币种多，给个上限免得无界增长
+
+function cacheGet(key: string): CacheEntry | null {
+  const hit = CACHE.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expires) {
+    CACHE.delete(key);
+    return null;
+  }
+  return hit;
+}
+
+function cacheSet(key: string, data: any[], constituents: any[]) {
+  // Map 迭代按插入序，最老的排在最前，超限就从头削
+  if (CACHE.size >= MAX_ENTRIES) {
+    const oldest = CACHE.keys().next().value;
+    if (oldest !== undefined) CACHE.delete(oldest);
+  }
+  CACHE.set(key, {
+    data,
+    constituents,
+    expires: Date.now() + (data.length ? TTL_MS : EMPTY_TTL_MS),
+  });
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const symbol = searchParams.get('symbol');
@@ -43,6 +81,17 @@ export async function GET(request: Request) {
 
   if (!symbol || !exchange) {
     return NextResponse.json({ error: 'Missing symbol or exchange' }, { status: 400 });
+  }
+
+  const cacheKey = `${exchange}:${symbol}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    return NextResponse.json({
+      success: true,
+      data: cached.data,
+      constituents: cached.constituents,
+      cached: true,
+    });
   }
 
   try {
@@ -158,8 +207,10 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json({ success: true, data: historyData, constituents });
+    cacheSet(cacheKey, historyData, constituents);
+    return NextResponse.json({ success: true, data: historyData, constituents, cached: false });
   } catch (error) {
+    // 失败不写缓存，下次请求照常重试
     console.error('Failed to fetch funding history:', error);
     return NextResponse.json({ error: 'Failed to fetch history' }, { status: 500 });
   }

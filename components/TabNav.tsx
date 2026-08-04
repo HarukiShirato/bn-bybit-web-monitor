@@ -1,6 +1,6 @@
 'use client';
 
-export type TabKey = 'perps' | 'earn' | 'options';
+export type TabKey = 'perps' | 'earn' | 'positions';
 
 interface TabNavProps {
   activeTab: TabKey;
@@ -10,7 +10,7 @@ interface TabNavProps {
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'perps', label: 'Perpetual Contracts' },
   { key: 'earn', label: 'Flexible Earn' },
-  { key: 'options', label: 'Options (Deribit)' },
+  { key: 'positions', label: 'Positions (eb65)' },
 ];
 
 export default function TabNav({ activeTab, onTabChange }: TabNavProps) {

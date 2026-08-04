@@ -8,7 +8,7 @@ import PerpTable, { PerpData } from '@/components/PerpTable';
 import TabNav, { TabKey } from '@/components/TabNav';
 import EarnTable, { CombinedEarnRow } from '@/components/EarnTable';
 import EarnFilterControls from '@/components/EarnFilterControls';
-import OptionsTable, { OptionRow } from '@/components/OptionsTable';
+import PositionsTable, { PositionRow, PositionSummary } from '@/components/PositionsTable';
 
 const PERP_EXCHANGES = ['Binance', 'Bybit', 'Bitget', 'Gate', 'OKX', 'Hyperliquid', 'Aster'];
 const EARN_EXCHANGES = ['Binance', 'Bybit', 'OKX'];
@@ -53,12 +53,13 @@ export default function Home() {
   const [earnMinFunding30d, setEarnMinFunding30d] = useState(0);
   const [earnMinVol, setEarnMinVol] = useState(0);
 
-  // ========== 期权数据 ==========
-  const [optionsData, setOptionsData] = useState<OptionRow[]>([]);
-  const [optionsLoading, setOptionsLoading] = useState(false);
-  const [optionsError, setOptionsError] = useState<string | null>(null);
-  const [optionsLastUpdate, setOptionsLastUpdate] = useState<Date | null>(null);
-  const [optionsFetched, setOptionsFetched] = useState(false);
+  // ========== eb65 持仓数据 ==========
+  const [positionsData, setPositionsData] = useState<PositionRow[]>([]);
+  const [positionsSummary, setPositionsSummary] = useState<PositionSummary | null>(null);
+  const [positionsLoading, setPositionsLoading] = useState(false);
+  const [positionsError, setPositionsError] = useState<string | null>(null);
+  const [positionsLastUpdate, setPositionsLastUpdate] = useState<Date | null>(null);
+  const [positionsFetched, setPositionsFetched] = useState(false);
 
   // ========== 数据获取 ==========
   const fetchPerpData = useCallback(async () => {
@@ -104,25 +105,29 @@ export default function Home() {
     }
   }, []);
 
-  const fetchOptionsData = useCallback(async () => {
+  const fetchPositionsData = useCallback(async () => {
     try {
-      setOptionsLoading(true);
-      setOptionsError(null);
-      const response = await fetch('/api/options');
+      setPositionsLoading(true);
+      setPositionsError(null);
+      const response = await fetch('/api/positions');
       const result = await response.json();
 
       if (result.success) {
-        setOptionsData(result.data);
-        setOptionsLastUpdate(new Date());
-        setOptionsFetched(true);
+        setPositionsData(result.data);
+        setPositionsSummary(result.summary || null);
+        // 用采集器落盘的时间，而不是页面请求时间，免得数据过期还显示"刚刚"
+        setPositionsLastUpdate(result.updatedAt ? new Date(result.updatedAt) : new Date());
+        setPositionsFetched(true);
+        // 单边交易所挂了时仍展示另一边，只把错误挂出来
+        setPositionsError(result.errors?.length ? result.errors.join(' · ') : null);
       } else {
-        setOptionsError(result.error || 'Failed to fetch options data');
+        setPositionsError(result.error || 'Failed to fetch positions');
       }
     } catch (err) {
-      setOptionsError('Network request failed');
-      console.error('Failed to fetch options data:', err);
+      setPositionsError('Network request failed');
+      console.error('Failed to fetch positions:', err);
     } finally {
-      setOptionsLoading(false);
+      setPositionsLoading(false);
     }
   }, []);
 
@@ -138,12 +143,12 @@ export default function Home() {
     }
   }, [activeTab, earnFetched, earnLoading, fetchEarnData]);
 
-  // 切换到期权 tab 时懒加载
+  // 切换到持仓 tab 时懒加载
   useEffect(() => {
-    if (activeTab === 'options' && !optionsFetched && !optionsLoading) {
-      fetchOptionsData();
+    if (activeTab === 'positions' && !positionsFetched && !positionsLoading) {
+      fetchPositionsData();
     }
-  }, [activeTab, optionsFetched, optionsLoading, fetchOptionsData]);
+  }, [activeTab, positionsFetched, positionsLoading, fetchPositionsData]);
 
   // 永续合约：每小时第 1 分钟自动刷新（资金费率整点结算）
   useEffect(() => {
@@ -196,13 +201,13 @@ export default function Home() {
     };
   }, [activeTab, fetchEarnData]);
 
-  // 期权数据：每 30 秒自动刷新
+  // 持仓：每 30 秒拉一次本地缓存（采集器 60s 刷新，读文件没有交易所开销）
   useEffect(() => {
-    if (activeTab !== 'options') return;
+    if (activeTab !== 'positions') return;
 
-    const interval = setInterval(fetchOptionsData, 5 * 60 * 1000);
+    const interval = setInterval(fetchPositionsData, 30 * 1000);
     return () => clearInterval(interval);
-  }, [activeTab, fetchOptionsData]);
+  }, [activeTab, fetchPositionsData]);
 
   // ========== 永续过滤 ==========
   const filteredData = useMemo(() => {
@@ -364,12 +369,12 @@ export default function Home() {
   const handleRefresh = () => {
     if (activeTab === 'perps') fetchPerpData();
     else if (activeTab === 'earn') fetchEarnData();
-    else fetchOptionsData();
+    else fetchPositionsData();
   };
 
-  const isLoading = activeTab === 'perps' ? loading : activeTab === 'earn' ? earnLoading : optionsLoading;
-  const currentError = activeTab === 'perps' ? error : activeTab === 'earn' ? earnError : optionsError;
-  const currentLastUpdate = activeTab === 'perps' ? lastUpdate : activeTab === 'earn' ? earnLastUpdate : optionsLastUpdate;
+  const isLoading = activeTab === 'perps' ? loading : activeTab === 'earn' ? earnLoading : positionsLoading;
+  const currentError = activeTab === 'perps' ? error : activeTab === 'earn' ? earnError : positionsError;
+  const currentLastUpdate = activeTab === 'perps' ? lastUpdate : activeTab === 'earn' ? earnLastUpdate : positionsLastUpdate;
 
   return (
     <div className="min-h-screen bg-brand-dark relative overflow-x-hidden selection:bg-brand-surfaceHighlight">
@@ -536,25 +541,25 @@ export default function Home() {
           </>
         )}
 
-        {/* ========== 期权 Tab ========== */}
-        {activeTab === 'options' && (
+        {/* ========== eb65 持仓 Tab ========== */}
+        {activeTab === 'positions' && (
           <>
-            {optionsError && (
+            {positionsError && (
               <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 flex items-center gap-3">
                 <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                {optionsError}
+                {positionsError}
               </div>
             )}
 
-            {optionsLoading && optionsData.length === 0 ? (
+            {positionsLoading && positionsData.length === 0 ? (
               <div className="text-center py-24 text-brand-text-secondary">
                  <div className="animate-spin w-8 h-8 border-2 border-brand-accent border-t-transparent rounded-full mx-auto mb-4"></div>
-                 Loading Deribit options data...
+                 Loading eb65 positions...
               </div>
             ) : (
-              <OptionsTable data={optionsData} />
+              <PositionsTable data={positionsData} summary={positionsSummary} />
             )}
           </>
         )}

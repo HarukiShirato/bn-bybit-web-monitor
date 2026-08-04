@@ -52,3 +52,6 @@ next-env.d.ts
 data/coin-icons.json
 data/icon-map.json
 data/icons/
+# eb65 真实持仓快照 —— 仓库是 public，绝不能进版本库
+/data/positions-eb65.json
+scripts/_probe*.js
