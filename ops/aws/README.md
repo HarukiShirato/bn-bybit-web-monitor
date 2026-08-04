@@ -35,13 +35,7 @@ aws iam create-role \
 
 ## 3. 绑定最小 SSM 权限
 
-先从 `ops/aws/perp-dashboard-deploy-document.yml` 创建自定义 Document `PerpDashboardDeploy`。该 Document 只有一个满足 40 位十六进制正则的 `CommitSha` 参数，并固定调用 root-owned wrapper；完成一次人工 bootstrap 后才能启用 workflow。
-
-```bash
-aws ssm create-document --region ap-northeast-1 --name PerpDashboardDeploy --document-type Command --content file://ops/aws/perp-dashboard-deploy-document.yml
-```
-
-内联策略只允许向 `i-0d3456ec595259c39` 使用这个自定义 Document，明确不允许 `AWS-RunShellScript`，以及读取/取消该次命令。
+此内联策略只允许向 `i-0d3456ec595259c39` 使用 `AWS-RunShellScript`，以及读取该实例命令的结果。它还包含 `ssm:CancelCommand`：AWS 的服务授权参考没有为该操作定义可放进 IAM `Resource` 的资源类型，因此这个单独语句必须使用 `"Resource": "*"`。工作流只会对它刚刚捕获的 `CommandId` 调用取消，并且同时传入该目标实例 ID；这使超时或 GitHub Actions 被取消时，SSM 会终止远端 shell，让部署脚本的 `EXIT` 回滚处理运行。
 
 ```bash
 aws iam put-role-policy \
@@ -60,13 +54,37 @@ aws ssm describe-instance-information \
 
 输出必须包含目标实例，且 `PingStatus` 为 `Online`。若没有，请先在该实例上修复 SSM Agent 和实例角色；不要扩大 GitHub 部署角色的权限范围。
 
-## 5. 无副作用地验证配置
+## 5. 发送无副作用的连通性验证
 
-不要为了探针临时授权任意 shell。只读确认目标实例在线、自定义 Document 内容正确、IAM policy 精确匹配：
+下面完整命令只输出 `ssm-ready`，不修改服务器文件或服务。它会捕获本次 `CommandId`，等待该实例上的同一命令完成，再读取并核验该命令的状态和标准输出：
 
 ```bash
-aws ssm get-document --region ap-northeast-1 --name PerpDashboardDeploy
-aws iam get-role-policy --role-name GitHubActionsPerpDashboardDeployRole --policy-name GitHubActionsPerpDashboardDeploy
+command_id="$(
+  aws ssm send-command \
+    --region ap-northeast-1 \
+    --instance-ids i-0d3456ec595259c39 \
+    --document-name AWS-RunShellScript \
+    --parameters 'commands=["printf ssm-ready"]' \
+    --query 'Command.CommandId' \
+    --output text
+)"
+
+aws ssm wait command-executed \
+  --region ap-northeast-1 \
+  --command-id "$command_id" \
+  --instance-id i-0d3456ec595259c39
+
+invocation="$(
+  aws ssm get-command-invocation \
+    --region ap-northeast-1 \
+    --command-id "$command_id" \
+    --instance-id i-0d3456ec595259c39 \
+    --query '{Status:Status,StandardOutputContent:StandardOutputContent}' \
+    --output json
+)"
+
+[[ "$(jq -r '.Status' <<<"$invocation")" == "Success" ]]
+[[ "$(jq -r '.StandardOutputContent' <<<"$invocation")" == "ssm-ready" ]]
 ```
 
-输出必须只有 `CommitSha` 参数，策略资源只能是自定义 Document 与目标 instance。随后才允许用无业务变更的已审查 commit 做首次端到端部署。
+两个断言均成立时，探针成功。这一步完成后，GitHub Actions 才可以用 OIDC 获得短期凭证并调用受限的 SSM 命令。
