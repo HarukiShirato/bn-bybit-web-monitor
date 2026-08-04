@@ -1,0 +1,106 @@
+# 生产部署运行手册
+
+本手册适用于 `data.dvcapital.xyz` 的永续合约仪表盘。生产部署由 GitHub Actions 通过 AWS Systems Manager（SSM，AWS 用来在受管服务器上执行命令的服务）完成；不要以 SSH 或 SSM 直接修改生产代码。
+
+## 不可变规则与目录
+
+GitHub `master` 是唯一的生产代码来源。只有合并到 `master` 的 commit 才会触发发布；本地工作树和 EC2 上的代码改动不得自动合并、提交或作为后续部署的来源。需要修复时，请在 GitHub 工作流中完成审查并合并到 `master`，让 Actions 发布该 commit。
+
+EC2 的应用根目录是 `/home/ec2-user/apps/perp-dashboard`：
+
+```text
+releases/<40 位 Git SHA>/  不可变的代码与构建产物
+current -> releases/<SHA>  正在服务的版本
+previous -> releases/<SHA> 上一个版本，用于紧急回退
+shared/.env               仅服务器保存的环境变量（0600）
+shared/data/              跨 release 保留的运行时数据
+shared/deploy-logs/       仅服务器保存的详细部署日志（0600）
+```
+
+每次发布将 `shared/.env` 和 `shared/data` 链接到新 release；它们不会进入 Git，也不能靠替换 release 恢复。`current` 像舞台上正在使用的剧本，`previous` 是上一版剧本；`shared/` 则像所有剧本共用的道具间。切换剧本不会替换道具，因此排障时要把“代码版本”和“环境变量/数据”分开判断。这个比喻不表示数据可随意修改：运行时数据仍应按其所属业务流程维护。
+
+## 正常发布与验收
+
+1. 将已审查的代码合并到 GitHub `master`。不要在 EC2 检出分支、`git pull`、编辑文件或手动运行发布脚本来替代该流程。
+2. 在 GitHub Actions 中打开此次 `Deploy production` 工作流。`verify` 必须先完成 `npm ci`、`npm run build` 和 `npm run test:deployment`；随后 `deploy` 使用短期 OIDC 凭证发起 SSM 命令。
+3. 记录 Actions 输出中的 `SSM_SUBMITTED COMMAND_ID=... SHA=...`。这是排查部署的索引，不是密钥。
+
+若需要从本机检查该 SSM 调用，请只使用刚记录的命令 ID：
+
+```bash
+command_id='替换为 Actions 输出中的 CommandId'
+aws ssm get-command-invocation \
+  --region ap-northeast-1 \
+  --command-id "$command_id" \
+  --instance-id i-0d3456ec595259c39 \
+  --query '{Status:Status,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' \
+  --output json
+```
+
+成功输出应包含 `SSM_RESULT=success`，以及 `DEPLOY_SHA`、`DEPLOY_PM2=online`、`DEPLOY_LOCAL_HEALTH=ok`、`DEPLOY_PUBLIC_HEALTH=ok` 这四类里程碑。命令状态不是 `Success` 时，不要重试未知的远程 shell；先查看 Actions 与本次 SSM 输出，再按下面的服务器检查定位原因。
+
+## 服务器检查（只读）
+
+以下命令应通过 AWS SSM Session Manager 以 `ec2-user` 身份执行，或由有权限的值班人员在受控会话中执行。它们不显示 `.env` 内容，也不修改代码或数据。
+
+```bash
+APP_ROOT=/home/ec2-user/apps/perp-dashboard
+readlink -f "$APP_ROOT/current"
+readlink -f "$APP_ROOT/previous"
+pm2 status perp-dashboard
+curl --fail --silent --show-error --max-time 2 http://127.0.0.1:3000/ >/dev/null && echo 'local health: ok'
+curl --fail --silent --show-error --max-time 15 https://data.dvcapital.xyz/ >/dev/null && echo 'public health: ok'
+```
+
+要将正在运行的 PM2 定义与 `current` 对照，可执行：
+
+```bash
+APP_ROOT=/home/ec2-user/apps/perp-dashboard
+pm2 describe perp-dashboard
+readlink -f "$APP_ROOT/current/ecosystem.config.cjs"
+```
+
+详细部署日志在服务器本地：`$APP_ROOT/shared/deploy-logs/<SHA>.log`。该目录权限为 `0700`，日志文件权限为 `0600`；不要把日志整体复制到 GitHub Actions、工单或聊天中，因为依赖安装或运行时输出可能包含不应扩散的上下文。优先用 SSM/Actions 的里程碑和错误状态沟通，必要时由有服务器权限的人员在受控会话中最小范围查看对应 SHA 的日志。
+
+## 旧目录审计
+
+旧检出目录 `/home/ec2-user/perp-dashboard` 仅用于迁移后的审计，不是部署来源，也不能从这里运行 `git pull` 或 PM2。迁移时会保留可校验的代码差异与未跟踪文件审计物；敏感环境文件、运行数据和常见密钥文件被排除。只查看状态与校验和，不要输出审计补丁或归档内容：
+
+```bash
+APP_ROOT=/home/ec2-user/apps/perp-dashboard
+git -C /home/ec2-user/perp-dashboard status --short
+sha256sum --check "$APP_ROOT/legacy-code-diff-20260804.patch.sha256"
+sha256sum --check "$APP_ROOT/legacy-code-untracked-20260804.txt.sha256"
+sha256sum --check "$APP_ROOT/legacy-code-untracked-20260804.tar.sha256"
+```
+
+若发现旧目录存在改动，记录其路径和审计结果，然后在受控开发环境中重新实现并走 `master` 发布；不要把旧目录直接同步到 `releases/`、`current` 或仓库。
+
+## 紧急人工回退
+
+仅当已确认当前版本导致服务不可用，且 `previous` 指向已成功发布的 release 时执行。此操作在 EC2 上只切换符号链接并**先只重载仪表盘**，不会改动 `shared/.env` 或 `shared/data`。请以 `ec2-user` 在受控 SSM 会话执行：
+
+```bash
+set -Eeuo pipefail
+APP_ROOT=/home/ec2-user/apps/perp-dashboard
+target="$(readlink -f "$APP_ROOT/previous")"
+test -d "$target"
+test "$(dirname "$target")" = "$APP_ROOT/releases"
+test -f "$target/.deployment-success.json"
+next_link="$APP_ROOT/current.rollback.$$"
+ln -s "$target" "$next_link"
+mv -Tf "$next_link" "$APP_ROOT/current"
+cd "$APP_ROOT/current"
+pm2 reload ecosystem.config.cjs --only perp-dashboard --update-env
+curl --fail --silent --show-error --max-time 2 http://127.0.0.1:3000/ >/dev/null
+curl --fail --silent --show-error --max-time 15 https://data.dvcapital.xyz/ >/dev/null
+printf 'rollback current=%s\n' "$(readlink -f "$APP_ROOT/current")"
+```
+
+任一命令失败时立刻停止，不要猜测性修改 `current`、`previous`、PM2 配置或代码。记录当前 `CommandId`、`readlink` 输出和健康检查结果，并从 GitHub 的已知正确 commit 发起修复发布。若仪表盘已恢复而采集器仍需处理，按事故流程单独评估；不要在未验证仪表盘前批量重载所有 PM2 进程。
+
+## 权限与日志边界
+
+GitHub 的部署角色仅应具备向实例 `i-0d3456ec595259c39` 执行和查询 SSM 命令的最小权限；角色信任关系仅限仓库 `HarukiShirato/real-time-monitoring-for-perpetual-contracts` 的 `master`。IAM、OIDC Provider、SSM 托管节点的建立和只读连通性验证，请使用 [AWS 部署角色设置](../ops/aws/README.md)。
+
+不要把 AWS 长期访问密钥、OIDC 令牌、`.env`、运行时数据或完整服务器日志写入仓库、Actions 输出、issue 或聊天。Actions 会掩码其短期凭证，并只回显部署里程碑；服务器详细日志留在 `shared/deploy-logs/`。需要扩大 AWS 权限、读取密钥或导出日志时，应走单独的最小权限审批，不要为排障临时扩大 GitHub 部署角色。

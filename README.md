@@ -93,6 +93,12 @@ npm run build
 npm start
 ```
 
+## 生产部署
+
+生产环境的代码唯一来源是 GitHub `master`：合并到该分支会触发 GitHub Actions，经过构建和部署契约检查后，通过 AWS SSM 发布到 EC2。不要直接在 EC2 或本地生产副本修改代码并把它当作发布版本；任何保留的现场改动只可审计，不能自动并回 `master`。
+
+生产环境变量和运行时数据不属于代码发布物，固定存放在 `shared/` 下，并由每个 release 以符号链接复用。完整的正常发布、故障排查和紧急回退步骤见 [生产部署运行手册](docs/production-deployment.md)。
+
 ## 环境变量
 
 当前版本无需配置环境变量。所有 API 调用均使用公开接口，无需 API Key。
@@ -147,4 +153,3 @@ npm start
 ## 许可证
 
 MIT
-
