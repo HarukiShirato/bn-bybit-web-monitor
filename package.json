@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:deployment": "bash tests/test-deployment-assets.sh"
+    "test:deployment": "bash tests/test-deployment-assets-contract.sh && bash tests/test-deployment-assets.sh"
   },
   "dependencies": {
     "@coingecko/coingecko-typescript": "^2.2.0",
@@ -24,6 +24,7 @@
     "autoprefixer": "^10.4.16",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.4.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "yaml": "^2.9.0"
   }
 }

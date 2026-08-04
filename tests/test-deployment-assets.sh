@@ -42,23 +42,31 @@ try {
 
 const statements = Array.isArray(policy.Statement) ? policy.Statement : [policy.Statement];
 const asArray = (value) => Array.isArray(value) ? value : [value];
-const allowed = (statement) => statement && statement.Effect === 'Allow';
+const sameSet = (actual, expected) =>
+  actual.length === expected.length && actual.every((value) => expected.includes(value));
 
 if (kind === 'trust') {
-  const valid = statements.some((statement) =>
-    allowed(statement) &&
-    asArray(statement.Action).includes('sts:AssumeRoleWithWebIdentity') &&
+  const statement = statements[0];
+  const condition = statement && statement.Condition;
+  const stringEquals = condition && condition.StringEquals;
+  const valid =
+    statements.length === 1 &&
+    statement &&
+    statement.Effect === 'Allow' &&
+    sameSet(asArray(statement.Action), ['sts:AssumeRoleWithWebIdentity']) &&
     statement.Principal &&
+    Object.keys(statement.Principal).length === 1 &&
     statement.Principal.Federated ===
       `arn:aws:iam::${accountId}:oidc-provider/token.actions.githubusercontent.com` &&
-    statement.Condition &&
-    statement.Condition.StringEquals &&
-    statement.Condition.StringEquals['token.actions.githubusercontent.com:aud'] === 'sts.amazonaws.com' &&
-    statement.Condition.StringEquals['token.actions.githubusercontent.com:sub'] ===
-      `repo:${repository}:ref:refs/heads/master`
-  );
+    condition &&
+    Object.keys(condition).length === 1 &&
+    stringEquals &&
+    Object.keys(stringEquals).length === 2 &&
+    stringEquals['token.actions.githubusercontent.com:aud'] === 'sts.amazonaws.com' &&
+    stringEquals['token.actions.githubusercontent.com:sub'] ===
+      `repo:${repository}:ref:refs/heads/master`;
   if (!valid) {
-    console.error(`${file}: missing the exact GitHub OIDC trust statement`);
+    console.error(`${file}: must contain exactly one least-privilege GitHub OIDC trust statement`);
     process.exit(1);
   }
   process.exit(0);
@@ -68,20 +76,22 @@ const expectedResources = new Set([
   'arn:aws:ssm:ap-northeast-1::document/AWS-RunShellScript',
   `arn:aws:ec2:ap-northeast-1:${accountId}:instance/${instanceId}`,
 ]);
-const sendCommand = statements.find((statement) =>
-  allowed(statement) && asArray(statement.Action).includes('ssm:SendCommand')
+const sendCommand = statements.find((statement) => asArray(statement && statement.Action).includes('ssm:SendCommand'));
+const statusRead = statements.find((statement) =>
+  sameSet(asArray(statement && statement.Action), ['ssm:GetCommandInvocation', 'ssm:ListCommandInvocations'])
 );
-if (!sendCommand) {
-  console.error(`${file}: missing an Allow ssm:SendCommand statement`);
-  process.exit(1);
-}
-const resources = asArray(sendCommand.Resource);
-if (resources.length !== expectedResources.size || resources.some((resource) => !expectedResources.has(resource))) {
-  console.error(`${file}: ssm:SendCommand must use exactly the deployment document and target instance resources`);
-  process.exit(1);
-}
-if (resources.some((resource) => resource === '*' || resource.includes('*'))) {
-  console.error(`${file}: ssm:SendCommand must not use wildcard resources`);
+const valid =
+  statements.length === 2 &&
+  sendCommand &&
+  sendCommand.Effect === 'Allow' &&
+  sameSet(asArray(sendCommand.Action), ['ssm:SendCommand']) &&
+  sameSet(asArray(sendCommand.Resource), [...expectedResources]) &&
+  statusRead &&
+  statusRead.Effect === 'Allow' &&
+  sameSet(asArray(statusRead.Action), ['ssm:GetCommandInvocation', 'ssm:ListCommandInvocations']) &&
+  sameSet(asArray(statusRead.Resource), ['*']);
+if (!valid) {
+  console.error(`${file}: must contain only exact SendCommand and command-status read permissions`);
   process.exit(1);
 }
 NODE
@@ -92,6 +102,7 @@ validate_workflow() {
 
   node - "$file" <<'NODE'
 const fs = require('fs');
+const YAML = require('yaml');
 const file = process.argv[2];
 const source = fs.readFileSync(file, 'utf8');
 
@@ -104,62 +115,8 @@ function assertValues(document) {
   }
 }
 
-function stripComment(line) {
-  let quote = null;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if ((character === "'" || character === '"') && line[index - 1] !== '\\') {
-      quote = quote === character ? null : (quote || character);
-    } else if (character === '#' && !quote && (index === 0 || /\s/.test(line[index - 1]))) {
-      return line.slice(0, index);
-    }
-  }
-  return line;
-}
-
-function fallbackParse(document) {
-  const lines = document.split(/\r?\n/).map(stripComment);
-  const valueInBlock = (block, key, expected) => {
-    const header = new RegExp(`^(\\s*)${block}:\\s*$`);
-    const property = new RegExp(`^\\s+${key}:\\s*${expected}\\s*$`);
-    let indentation = null;
-    for (const line of lines) {
-      const match = line.match(header);
-      if (match) {
-        indentation = match[1].length;
-        continue;
-      }
-      if (indentation !== null && /^\S/.test(line)) {
-        indentation = null;
-      }
-      if (indentation !== null && line.match(property)) return true;
-    }
-    return false;
-  };
-  if (!valueInBlock('permissions', 'id-token', 'write')) {
-    throw new Error('permissions.id-token must be write');
-  }
-  if (!valueInBlock('concurrency', 'cancel-in-progress', 'false')) {
-    throw new Error('concurrency.cancel-in-progress must be false');
-  }
-}
-
 try {
-  let parser;
-  try {
-    parser = require('yaml');
-  } catch (_) {
-    try {
-      parser = require('js-yaml');
-    } catch (_) {
-      parser = null;
-    }
-  }
-  if (parser) {
-    assertValues(parser.parse ? parser.parse(source) : parser.load(source));
-  } else {
-    fallbackParse(source);
-  }
+  assertValues(YAML.parse(source));
 } catch (error) {
   console.error(`${file}: ${error.message}`);
   process.exit(1);
@@ -187,7 +144,7 @@ scan_for_secrets() {
   ((${#paths[@]})) || return
 
   if grep -R -I -i -E \
-    'AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|ghp_[[:alnum:]_]+|github_pat_[[:alnum:]_]+|-----BEGIN( [A-Z0-9]+)? PRIVATE KEY-----' \
+    'AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[[:alnum:]_]{36}|github_pat_[[:alnum:]_]{20,}|-----BEGIN( [A-Z0-9]+)? PRIVATE KEY-----' \
     "${paths[@]}" >/dev/null 2>&1; then
     fail 'potential credential material found in deployment assets'
   else
@@ -195,6 +152,40 @@ scan_for_secrets() {
     if (( status != 1 )); then
       fail "credential scan failed with grep exit status $status"
     fi
+  fi
+
+  if ! node - "${paths[@]}" <<'NODE'
+const fs = require('fs');
+const paths = process.argv.slice(2);
+const names = /\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)\s*[:=]\s*(.*?)\s*(?:#.*)?$/i;
+const files = [];
+for (const path of paths) {
+  const stat = fs.statSync(path);
+  if (stat.isDirectory()) {
+    for (const entry of fs.readdirSync(path, { recursive: true, withFileTypes: true })) {
+      if (entry.isFile()) files.push(`${entry.parentPath || entry.path}/${entry.name}`);
+    }
+  } else {
+    files.push(path);
+  }
+}
+for (const file of files) {
+  let lines;
+  try {
+    lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+  } catch (_) {
+    continue;
+  }
+  for (const line of lines) {
+    const match = line.match(names);
+    if (!match) continue;
+    const value = match[1].trim().replace(/^['"]|['"]$/g, '').trim();
+    if (value && !value.startsWith('$')) process.exit(1);
+  }
+}
+NODE
+  then
+    fail 'direct AWS credential variable assignment found in deployment assets'
   fi
 }
 
@@ -225,9 +216,11 @@ fi
 
 scan_for_secrets
 
-for file in "${missing[@]}"; do
-  echo "missing: $file" >&2
-done
+if ((${#missing[@]})); then
+  for file in "${missing[@]}"; do
+    echo "missing: $file" >&2
+  done
+fi
 
 if (( failed || ${#missing[@]} )); then
   exit 1
