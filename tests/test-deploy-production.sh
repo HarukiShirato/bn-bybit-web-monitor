@@ -72,8 +72,7 @@ EOF
 set -euo pipefail
 printf '%s\n' "$*" >>"$COMMAND_LOG"
 if [[ "${NPM_ASSERT_SHARED:-0}" == 1 ]]; then
-  [[ -L .env && "$(readlink .env)" == "$EXPECTED_SHARED/.env" ]]
-  [[ -L data && "$(readlink data)" == "$EXPECTED_SHARED/data" ]]
+  [[ ! -e .env ]]
 fi
 [[ "${NPM_FAIL:-0}" != 1 ]]
 EOF
@@ -149,6 +148,19 @@ run_deploy() {
   "$@" bash "$script" "$sha"
 }
 
+run_prepare() {
+  local fixture="$1"
+  PATH="$fixture/bin:$PATH" \
+  APP_ROOT="$fixture/app" \
+  EXPECTED_USER="$(id -un)" \
+  COMMAND_LOG="$fixture/commands.log" \
+  PM2_CALLS_FILE="$fixture/pm2-calls" \
+  FIND_ARGUMENT_LOG="$fixture/find-arguments.log" \
+  MV_CALLS_FILE="$fixture/mv-calls" \
+  EXPECTED_SHARED="$fixture/app/shared" \
+  bash "$script" --prepare-only "$sha"
+}
+
 [[ -f "$script" ]] || fail 'deployment script is missing'
 
 fixture="$(make_fixture)"
@@ -178,6 +190,7 @@ else
 fi
 assert_absent "$fixture/app/current"
 assert_absent "$fixture/app/releases/.$sha.tmp"
+[[ ! -d "$fixture/app/shared/deploy-logs" ]] || [[ -z "$(find "$fixture/app/shared/deploy-logs" -type f -print -quit)" ]] || fail 'lock loser created a deployment log'
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
@@ -206,6 +219,14 @@ assert_absent "$fixture/app/releases/$sha"
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
+run_prepare "$fixture"
+[[ -f "$fixture/app/releases/$sha/.deployment-prepared.json" ]] || fail 'prepare-only did not create a prepared release'
+[[ ! -e "$fixture/app/releases/$sha/.env" ]] || fail 'prepare-only linked production env before migration'
+assert_absent "$fixture/app/current"
+[[ "$(pm2_calls "$fixture")" == 0 ]] || fail 'prepare-only touched PM2'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
 run_deploy "$fixture" env NPM_ASSERT_SHARED=1
 [[ "$(readlink "$fixture/app/releases/$sha/.env")" == "$fixture/app/shared/.env" ]] || fail 'release .env is not shared'
 [[ "$(readlink "$fixture/app/releases/$sha/data")" == "$fixture/app/shared/data" ]] || fail 'release data is not shared'
@@ -214,15 +235,25 @@ grep -Fq '"deployed_at"' "$fixture/app/releases/$sha/.deployment-success.json" |
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
+run_deploy "$fixture"
+logs_before="$(find "$fixture/app/shared/deploy-logs" -type f | wc -l | tr -d ' ')"
+run_deploy "$fixture"
+logs_after="$(find "$fixture/app/shared/deploy-logs" -type f | wc -l | tr -d ' ')"
+[[ "$logs_after" == $((logs_before + 1)) ]] || fail 'same-SHA rerun was not idempotent with a unique log'
+[[ "$(pm2_calls "$fixture")" == 3 ]] || fail 'same-SHA rerun did not verify the five-process deployment'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
 old="$fixture/app/releases/old"
 mkdir -p "$old"
 ln -s "$old" "$fixture/app/current"
-if run_deploy "$fixture" env PM2_FAIL_AT=1; then
+if run_deploy "$fixture" env PM2_FAIL_AT=2; then
   fail 'initial PM2 reload failure unexpectedly succeeded'
 fi
 assert_link "$fixture/app/current" "$old"
 assert_link "$fixture/app/previous" "$old"
-[[ "$(pm2_calls "$fixture")" == 2 ]] || fail 'PM2 reload failure did not invoke rollback exactly once'
+[[ "$(pm2_calls "$fixture")" == 3 ]] || fail 'PM2 reload failure did not invoke rollback exactly once'
+[[ "$(grep -Fc 'startOrRestart ecosystem.config.cjs --update-env' "$fixture/commands.log")" == 2 ]] || fail 'deploy and rollback did not switch all five PM2 targets'
 assert_absent "$fixture/app/releases/.$sha.tmp"
 assert_absent "$fixture/app/releases/$sha"
 rm -rf "$fixture"
@@ -235,9 +266,9 @@ if run_deploy "$fixture" env LOCAL_FAIL=1; then
   fail 'local health failure unexpectedly succeeded'
 fi
 assert_link "$fixture/app/current" "$old"
-[[ "$(pm2_calls "$fixture")" == 2 ]] || fail 'local health failure did not trigger exactly one PM2 rollback reload'
-[[ "$(grep -Fc -- '--max-time 2 http://127.0.0.1:3000/' "$fixture/commands.log")" == 13 ]] || fail 'local health did not use 12 bounded attempts plus rollback verification'
-[[ "$(grep -Fc 'sleep 3' "$fixture/commands.log")" == 11 ]] || fail 'local health did not use the bounded three-second retry interval'
+[[ "$(pm2_calls "$fixture")" == 3 ]] || fail 'local health failure did not trigger exactly one PM2 rollback reload'
+[[ "$(grep -Fc -- '--max-time 2 http://127.0.0.1:3000/' "$fixture/commands.log")" == 24 ]] || fail 'deploy and rollback did not use bounded local-health polling'
+[[ "$(grep -Fc 'sleep 3' "$fixture/commands.log")" == 22 ]] || fail 'local health did not use the bounded three-second retry interval'
 ! grep -Fq 'https://data.dvcapital.xyz/' "$fixture/commands.log" || fail 'public health ran after local health failed'
 assert_absent "$fixture/app/releases/$sha"
 rm -rf "$fixture"
@@ -246,11 +277,12 @@ fixture="$(make_fixture)"
 old="$fixture/app/releases/old"
 mkdir -p "$old"
 ln -s "$old" "$fixture/app/current"
-if run_deploy "$fixture" env PUBLIC_FAIL=1 PM2_FAIL_AT=2; then
+if run_deploy "$fixture" env PUBLIC_FAIL=1; then
   fail 'public health failure unexpectedly succeeded'
 fi
 assert_link "$fixture/app/current" "$old"
-[[ "$(pm2_calls "$fixture")" == 2 ]] || fail 'rollback recovery failure did not invoke PM2 exactly twice'
+[[ "$(pm2_calls "$fixture")" == 3 ]] || fail 'rollback recovery failure did not invoke PM2 exactly three times'
+[[ "$(grep -Fc 'https://data.dvcapital.xyz/' "$fixture/commands.log")" == 2 ]] || fail 'rollback did not verify public health'
 assert_absent "$fixture/app/releases/.$sha.tmp"
 assert_absent "$fixture/app/releases/$sha"
 rm -rf "$fixture"
@@ -343,6 +375,7 @@ assert_link "$fixture/app/previous" "$fixture/app/releases/old"
 [[ ! -d "$fixture/app/releases/remove3" ]] || fail 'cleanup did not remove old successful releases'
 [[ -d "$fixture/app/releases/unverified" ]] || fail 'cleanup deleted an unverified release'
 [[ -d "$fixture/app/shared/external-success" ]] || fail 'cleanup deleted a successful marker outside releases'
+[[ "$(find "$fixture/app/releases" -mindepth 2 -maxdepth 2 -name .deployment-success.json | wc -l | tr -d ' ')" == 5 ]] || fail 'cleanup did not retain exactly five successful releases'
 grep -Fq -- "-name .deployment-success.json" "$fixture/find-arguments.log" || fail 'cleanup did not select successful-release markers'
 rm -rf "$fixture"
 

@@ -139,7 +139,7 @@ write('.github/workflows/deploy-production.yml', [
   "          [[ \"$status\" == 'Success' ]] || exit 1",
   '          completed=1',
 ].join('\n'));
-write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nEXPECTED_USER=ec2-user\nid -un\nflock\nnpm ci\nnpm run build\npm2 reload\ndata.dvcapital.xyz\ndeployment SHA\nPM2 reload confirmed\nlocal health confirmed\npublic health confirmed\n');
+write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nEXPECTED_USER=ec2-user\nid -un\nflock\nnpm ci\nnpm run build\npm2 stop funding-collector\npm2 startOrRestart\n--prepare-only\ndata.dvcapital.xyz\ndeployment SHA\nPM2 reload confirmed\nlocal health confirmed\npublic health confirmed\n');
 write('scripts/migrate-production-layout.sh', [
   '#!/usr/bin/env bash',
   'rsync -a legacy/data/ shared/data/',

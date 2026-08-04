@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PREPARE_ONLY=0
+if [[ "${1:-}" == --prepare-only ]]; then PREPARE_ONLY=1; shift; fi
 readonly SHA="${1:-}"
 readonly EXPECTED_USER="${EXPECTED_USER:-ec2-user}"
 readonly APP_ROOT="${APP_ROOT:-/home/ec2-user/apps/perp-dashboard}"
@@ -12,25 +14,25 @@ readonly LOCK_FILE="$APP_ROOT/deploy.lock"
 readonly REPOSITORY_URL="https://github.com/HarukiShirato/real-time-monitoring-for-perpetual-contracts.git"
 readonly LOCAL_HEALTH_URL="${LOCAL_HEALTH_URL:-http://127.0.0.1:3000/}"
 readonly PUBLIC_HEALTH_URL="${PUBLIC_HEALTH_URL:-https://data.dvcapital.xyz/}"
-readonly PM2_APP="${PM2_APP:-perp-dashboard}"
 readonly LOCAL_HEALTH_BUDGET_SECONDS=57
 readonly DEPLOY_LOG_DIR="$SHARED/deploy-logs"
+readonly PM2_TARGETS=(perp-dashboard funding-collector arbitrage-collector staking-collector positions-collector)
 
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid git SHA" >&2; exit 64; }
 [[ "$(id -un)" == "$EXPECTED_USER" ]] || { echo "must run as $EXPECTED_USER" >&2; exit 77; }
 
 mkdir -p "$RELEASES" "$SHARED"
+exec 9>"$LOCK_FILE"
+flock -n 9 || { echo "deployment already running" >&2; exit 75; }
 umask 077
 mkdir -p "$DEPLOY_LOG_DIR"
 chmod 0700 "$DEPLOY_LOG_DIR"
-readonly DEPLOY_LOG="$DEPLOY_LOG_DIR/${SHA}.log"
-: >"$DEPLOY_LOG"
+readonly DEPLOY_LOG="$DEPLOY_LOG_DIR/${SHA}-$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
+(set -o noclobber; : >"$DEPLOY_LOG") || { echo 'cannot create unique deployment log' >&2; exit 1; }
 chmod 0600 "$DEPLOY_LOG"
 exec 3>&1 4>&2
 exec >>"$DEPLOY_LOG" 2>&1
 printf 'DEPLOY_SHA=%s\n' "$SHA" >&3
-exec 9>"$LOCK_FILE"
-flock -n 9 || { echo "deployment already running" >&2; exit 75; }
 
 resolve_path() {
   local path="$1"
@@ -89,6 +91,7 @@ readonly RELEASES_REAL="$(resolve_path "$RELEASES")"
 old="$(resolve_path "$CURRENT" 2>/dev/null || true)"
 original_previous="$(resolve_path "$PREVIOUS" 2>/dev/null || true)"
 switched=0
+pm2_disrupted=0
 release_published=0
 completed=0
 
@@ -117,7 +120,7 @@ cleanup_failed_deployment() {
   set +e
   rm -rf -- "$tmp"
   if (( ! completed && release_published )); then
-    if (( switched )); then
+    if (( pm2_disrupted )); then
       if [[ -n "$old" && -d "$old" ]]; then
         echo "deployment failed; restoring previous release" >&2
         if ! switch_link "$old" "$CURRENT"; then
@@ -126,9 +129,11 @@ cleanup_failed_deployment() {
         current_after_rollback="$(resolve_path "$CURRENT" 2>/dev/null || true)"
         if [[ "$current_after_rollback" == "$old" && -d "$current_after_rollback" ]]; then
           remove_failed_release=1
-          if ! (cd "$CURRENT" && pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env); then
+          if ! (cd "$CURRENT" && pm2 startOrRestart ecosystem.config.cjs --update-env); then
             rollback_ok=0
-          elif ! curl --fail --silent --show-error --max-time 2 "$LOCAL_HEALTH_URL" >/dev/null; then
+          elif ! wait_for_local_health; then
+            rollback_ok=0
+          elif ! curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null; then
             rollback_ok=0
           fi
         else
@@ -198,24 +203,38 @@ wait_for_local_health() {
     fi
     sleep "$sleep_seconds"
   done
-  fail_deployment "local health check failed"
+  return 1
 }
 
-[[ ! -e "$release" ]] || fail_deployment "release already exists: $release"
+if [[ -d "$release" && -f "$release/.deployment-success.json" ]]; then
+  if (( PREPARE_ONLY )); then echo 'release already prepared'; completed=1; exit 0; fi
+  [[ "$(resolve_path "$CURRENT" 2>/dev/null || true)" == "$(resolve_path "$release")" ]] || fail_deployment 'successful release exists but is not current'
+  (cd "$CURRENT" && pm2 startOrRestart ecosystem.config.cjs --update-env) || fail_deployment 'same-SHA PM2 verification failed'
+  wait_for_local_health || fail_deployment 'same-SHA local health failed'
+  curl --fail --silent --show-error --max-time 15 "$PUBLIC_HEALTH_URL" >/dev/null || fail_deployment 'same-SHA public health failed'
+  completed=1
+  echo 'deployment already complete and verified'
+  exit 0
+fi
+[[ ! -e "$release" ]] || fail_deployment "unverified release already exists: $release"
 rm -rf -- "$tmp"
 git clone --no-checkout "$REPOSITORY_URL" "$tmp" || fail_deployment 'repository clone failed'
 git -C "$tmp" fetch --depth 1 origin "$SHA" || fail_deployment 'commit fetch failed'
 git -C "$tmp" checkout --detach "$SHA" || fail_deployment 'commit checkout failed'
 test "$(git -C "$tmp" rev-parse HEAD)" = "$SHA" || fail_deployment 'checked out commit does not match requested SHA'
-ln -s "$SHARED/.env" "$tmp/.env" || fail_deployment 'shared .env link failed'
+(cd "$tmp" && npm ci && npm run build) || fail_deployment 'dependency install or build failed'
 rm -rf -- "$tmp/data"
 ln -s "$SHARED/data" "$tmp/data" || fail_deployment 'shared data link failed'
-(cd "$tmp" && npm ci && npm run build) || fail_deployment 'dependency install or build failed'
 mv "$tmp" "$release" || fail_deployment 'release publish failed'
 release_published=1
+printf '{"sha":"%s","prepared_at":"%s"}\n' "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$release/.deployment-prepared.json"
+if (( PREPARE_ONLY )); then completed=1; echo 'release prepared'; exit 0; fi
+ln -s "$SHARED/.env" "$release/.env" || fail_deployment 'shared .env link failed'
 
 [[ -z "$old" || -d "$old" ]] || fail_deployment "current release target is missing: $old"
 previous_changed=0
+pm2_disrupted=1
+pm2 stop funding-collector arbitrage-collector staking-collector positions-collector || fail_deployment 'collector stop failed'
 if [[ -n "$old" ]]; then
   switch_link "$old" "$PREVIOUS" || fail_deployment 'previous release link switch failed'
   previous_changed=1
@@ -234,7 +253,7 @@ fi
 switched=1
 
 cd "$CURRENT"
-pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env || fail_deployment 'pm2-reload'
+pm2 startOrRestart ecosystem.config.cjs --update-env || fail_deployment 'pm2-switch'
 printf 'DEPLOY_PM2=online\n' >&3
 wait_for_local_health || fail_deployment 'local health check failed'
 printf 'DEPLOY_LOCAL_HEALTH=ok\n' >&3
@@ -245,14 +264,21 @@ printf '{"sha":"%s","deployed_at":"%s"}\n' \
   "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$release/.deployment-success.json"
 completed=1
 switched=0
+pm2_disrupted=0
 
 current_target="$(resolve_path "$CURRENT" 2>/dev/null || true)"
 previous_target="$(resolve_path "$PREVIOUS" 2>/dev/null || true)"
+retained=()
+[[ -z "$current_target" ]] || retained+=("$current_target")
+if [[ -n "$previous_target" && "$previous_target" != "$current_target" ]]; then retained+=("$previous_target"); fi
+retained_count="${#retained[@]}"
 while IFS= read -r candidate; do
   candidate="$(successful_release_candidate "$candidate" || true)"
   [[ -n "$candidate" ]] || continue
-  [[ "$candidate" == "$current_target" || "$candidate" == "$previous_target" ]] && continue
-  rm -rf -- "$candidate"
-done < <(find "$RELEASES" -mindepth 2 -maxdepth 2 -type f -name '.deployment-success.json' -printf '%T@ %h\n' | sort -nr | tail -n +6 | cut -d' ' -f2-)
+  already_retained=0
+  for protected in "${retained[@]}"; do [[ "$candidate" == "$protected" ]] && already_retained=1; done
+  (( already_retained )) && continue
+  if (( retained_count < 5 )); then retained+=("$candidate"); retained_count=$((retained_count + 1)); else rm -rf -- "$candidate"; fi
+done < <(find "$RELEASES" -mindepth 2 -maxdepth 2 -type f -name '.deployment-success.json' -printf '%T@ %h\n' | sort -nr | cut -d' ' -f2-)
 
 echo "deployment completed"

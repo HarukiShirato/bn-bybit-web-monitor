@@ -317,6 +317,27 @@ fi
 [[ ! -e "$bad_app" ]] || fail 'incorrect-user migration created application directories'
 rm -rf -- "$fixture"
 
+fixture="$(make_fixture present)"
+bad_app="$fixture/must-not-exist"
+if run_migration "$fixture" env EXPECTED_USER=definitely-not-"$(id -un)" APP_ROOT="$bad_app"; then
+  fail 'early failure unexpectedly succeeded'
+fi
+cmp -s "$fixture/expected-original-dump.pm2" "$fixture/pm2-home/dump.pm2" || fail 'early failure modified the pre-existing PM2 dump'
+rm -rf -- "$fixture"
+
+fixture="$(make_fixture)"
+rm -f "$fixture/app/current"
+prepared_sha=0123456789abcdef0123456789abcdef01234567
+prepared="$fixture/app/releases/$prepared_sha"
+mkdir -p "$prepared"
+cp "$root/ecosystem.config.cjs" "$prepared/ecosystem.config.cjs"
+printf '{"sha":"%s"}\n' "$prepared_sha" >"$prepared/.deployment-prepared.json"
+run_migration "$fixture" env PREPARED_SHA="$prepared_sha"
+[[ "$(cd "$fixture/app/current" && pwd -P)" == "$(cd "$prepared" && pwd -P)" ]] || fail 'first migration did not bootstrap current from prepared release'
+[[ -L "$prepared/.env" ]] || fail 'first migration did not link runtime env after the prepared build'
+[[ -f "$prepared/.deployment-success.json" ]] || fail 'first migration did not mark the prepared release successful'
+rm -rf -- "$fixture"
+
 fixture="$(make_fixture)"
 bad_app="$fixture/legacy/must-not-exist"
 if run_migration "$fixture" env APP_ROOT="$bad_app"; then

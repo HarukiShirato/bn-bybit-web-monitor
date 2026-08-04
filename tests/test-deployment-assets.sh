@@ -398,7 +398,7 @@ fi
 
 if require_file scripts/deploy-production.sh; then
   bash -n scripts/deploy-production.sh || fail 'deploy-production.sh has invalid Bash syntax'
-  contains_all scripts/deploy-production.sh flock 'npm ci' 'npm run build' 'pm2 reload' 'data.dvcapital.xyz' 'id -un' 'EXPECTED_USER' \
+  contains_all scripts/deploy-production.sh flock 'npm ci' 'npm run build' 'pm2 startOrRestart' 'pm2 stop funding-collector' '--prepare-only' 'data.dvcapital.xyz' 'id -un' 'EXPECTED_USER' \
     'DEPLOY_SHA=' 'DEPLOY_PM2=online' 'DEPLOY_LOCAL_HEALTH=ok' 'DEPLOY_PUBLIC_HEALTH=ok' 'DEPLOY_LOG'
 fi
 
