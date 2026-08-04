@@ -36,7 +36,7 @@ curl --fail --silent --show-error --location \
   --output "$deploy_script"
 chmod 0755 "$deploy_script"
 "$deploy_script" --prepare-only "$SHA"
-PREPARED_SHA="$SHA" "$APP_ROOT/releases/$SHA/scripts/migrate-production-layout.sh"
+PREPARED_SHA="$SHA" bash "$APP_ROOT/releases/$SHA/scripts/migrate-production-layout.sh"
 "$deploy_script" "$SHA"
 ```
 

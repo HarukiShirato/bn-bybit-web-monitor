@@ -80,10 +80,11 @@ const fs = require('fs');
 const [file, cwd, ...names] = process.argv.slice(2);
 const apps = JSON.parse(fs.readFileSync(file));
 const envOf = (app) => app.pm2_env ?? app;
+const expectedCwd = fs.realpathSync(cwd);
 for (const name of names) {
   const matches = apps.filter((app) => envOf(app).name === name);
   const env = matches.length === 1 ? envOf(matches[0]) : null;
-  if (!env || env.status !== 'online' || env.pm_cwd !== cwd) process.exit(1);
+  if (!env || env.status !== 'online' || !env.pm_cwd || fs.realpathSync(env.pm_cwd) !== expectedCwd) process.exit(1);
 }
 NODE
   local status=$?
