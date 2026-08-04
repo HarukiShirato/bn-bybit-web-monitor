@@ -55,23 +55,45 @@ completed=0
 cleanup_failed_deployment() {
   local code=$?
   local rollback_ok=1
+  local current_after_rollback
+  local remove_failed_release=0
 
   trap - EXIT
   set +e
   rm -rf -- "$tmp"
-  if (( ! completed && switched )) && [[ -n "$old" && -d "$old" ]]; then
-    echo "deployment failed; restoring previous release" >&2
-    if ! switch_link "$old" "$CURRENT"; then
-      rollback_ok=0
-    elif ! (cd "$CURRENT" && pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env); then
-      rollback_ok=0
-    elif ! curl --fail --silent --show-error --max-time 2 "$LOCAL_HEALTH_URL" >/dev/null; then
-      rollback_ok=0
+  if (( ! completed && release_published )); then
+    if (( switched )); then
+      if [[ -n "$old" && -d "$old" ]]; then
+        echo "deployment failed; restoring previous release" >&2
+        if ! switch_link "$old" "$CURRENT"; then
+          rollback_ok=0
+        else
+          current_after_rollback="$(resolve_link "$CURRENT")"
+          if [[ "$current_after_rollback" == "$old" && -d "$current_after_rollback" ]]; then
+            remove_failed_release=1
+            if ! (cd "$CURRENT" && pm2 reload ecosystem.config.cjs --only "$PM2_APP" --update-env); then
+              rollback_ok=0
+            elif ! curl --fail --silent --show-error --max-time 2 "$LOCAL_HEALTH_URL" >/dev/null; then
+              rollback_ok=0
+            fi
+          else
+            rollback_ok=0
+          fi
+        fi
+        if (( ! remove_failed_release )); then
+          echo "rollback could not restore current; retaining failed release for manual inspection" >&2
+        fi
+      else
+        rollback_ok=0
+        echo "deployment failed without a previous release; retaining failed release for manual inspection" >&2
+      fi
+    else
+      remove_failed_release=1
     fi
     (( rollback_ok )) || echo "rollback recovery failed" >&2
-  fi
-  if (( ! completed && release_published )); then
-    rm -rf -- "$release"
+    if (( remove_failed_release )); then
+      rm -rf -- "$release"
+    fi
   fi
   exit "$code"
 }

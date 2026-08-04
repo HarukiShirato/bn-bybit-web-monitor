@@ -115,6 +115,13 @@ EOF
   cat >"$fixture/bin/mv" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+calls=0
+[[ -f "$MV_CALLS_FILE" ]] && calls="$(cat "$MV_CALLS_FILE")"
+calls=$((calls + 1))
+printf '%s\n' "$calls" >"$MV_CALLS_FILE"
+if [[ "${MV_FAIL_AT:-0}" == "$calls" ]]; then
+  exit 1
+fi
 if [[ "$1" == '-Tf' ]]; then
   rm -f -- "$3"
   exec /bin/mv "$2" "$3"
@@ -133,6 +140,7 @@ run_deploy() {
   COMMAND_LOG="$fixture/commands.log" \
   PM2_CALLS_FILE="$fixture/pm2-calls" \
   FIND_ARGUMENT_LOG="$fixture/find-arguments.log" \
+  MV_CALLS_FILE="$fixture/mv-calls" \
   EXPECTED_SHARED="$fixture/app/shared" \
   "$@" bash "$script" "$sha"
 }
@@ -233,6 +241,27 @@ assert_link "$fixture/app/current" "$old"
 [[ "$(pm2_calls "$fixture")" == 2 ]] || fail 'rollback recovery failure did not invoke PM2 exactly twice'
 assert_absent "$fixture/app/releases/.$sha.tmp"
 assert_absent "$fixture/app/releases/$sha"
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+old="$fixture/app/releases/old"
+mkdir -p "$old"
+ln -s "$old" "$fixture/app/current"
+if run_deploy "$fixture" env PUBLIC_FAIL=1 MV_FAIL_AT=4; then
+  fail 'rollback link-switch failure unexpectedly succeeded'
+fi
+assert_link "$fixture/app/current" "$fixture/app/releases/$sha"
+assert_link "$fixture/app/previous" "$old"
+[[ -d "$fixture/app/releases/$sha" ]] || fail 'rollback link-switch failure deleted the active failed release'
+rm -rf "$fixture"
+
+fixture="$(make_fixture)"
+if run_deploy "$fixture" env PUBLIC_FAIL=1; then
+  fail 'first-deployment public health failure unexpectedly succeeded'
+fi
+assert_link "$fixture/app/current" "$fixture/app/releases/$sha"
+[[ -d "$fixture/app/releases/$sha" ]] || fail 'first-deployment failure deleted the current release'
+assert_absent "$fixture/app/previous"
 rm -rf "$fixture"
 
 fixture="$(make_fixture)"
