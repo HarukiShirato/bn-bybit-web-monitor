@@ -49,9 +49,9 @@ jobs:
           remote_command="$(jq -nr --arg sha "$GITHUB_SHA" --arg script_url "$script_url" '
             [
               "set -Eeuo pipefail",
-              "install -d -m 0755 -o ec2-user -g ec2-user /home/ec2-user/apps/perp-dashboard/shared/bin",
+              "install -d -m 0755 -o ec2-user -g ec2-user /home/ec2-user/.deploy-scripts/perp-dashboard",
               ("sudo -u ec2-user -H -- bash -c " +
-                ("set -Eeuo pipefail\nsha=\"$1\"\nscript_url=\"$2\"\ntarget=\"/home/ec2-user/apps/perp-dashboard/shared/bin/deploy-production-\($sha).sh\"\ncurl --fail --silent --show-error --location \"$script_url\" --output \"$target\"\nchmod 0755 \"$target\"\nexec \"$target\" \"$sha\"" | @sh) +
+                ("set -Eeuo pipefail\nsha=\"$1\"\nscript_url=\"$2\"\ntarget=\"/home/ec2-user/.deploy-scripts/perp-dashboard/deploy-production-\($sha).sh\"\ncurl --fail --silent --show-error --location \"$script_url\" --output \"$target\"\nchmod 0755 \"$target\"\nexec \"$target\" \"$sha\"" | @sh) +
                 " deploy-production " + ($sha | @sh) + " " + ($script_url | @sh))
             ] | join("\n")')"
           bash scripts/run-ssm-deployment.sh "$GITHUB_SHA" "$remote_command"

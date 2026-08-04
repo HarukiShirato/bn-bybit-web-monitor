@@ -34,7 +34,7 @@ cat >"$fixture/bin/sudo" <<'EOF'
 set -euo pipefail
 while [[ "$1" != bash ]]; do shift; done
 script="$3"
-script="${script//\/home\/ec2-user\/apps\/perp-dashboard\/shared\/bin/$SUDO_TARGET}"
+script="${script//\/home\/ec2-user\/.deploy-scripts\/perp-dashboard/$SUDO_TARGET}"
 exec bash -c "$script" "${@:4}"
 EOF
 chmod +x "$fixture/bin"/*

@@ -1,6 +1,5 @@
-const APP_ROOT = '/home/ec2-user/apps/perp-dashboard';
-const CURRENT = `${APP_ROOT}/current`;
-const SHARED_DATA = `${APP_ROOT}/shared/data`;
+const CURRENT = '/home/ec2-user/perp-dashboard';
+const SHARED_DATA = `${CURRENT}/data`;
 
 const collector = (name, script) => ({
   name,
