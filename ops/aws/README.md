@@ -1,0 +1,67 @@
+# GitHub OIDC 部署角色设置
+
+以下命令仅供具备 AWS IAM 管理权限的人工操作员执行；本仓库的自动化不会创建、修改或删除 AWS 资源。请在仓库根目录执行，并确认当前 AWS CLI 身份属于账户 `890742583014`。
+
+```bash
+aws sts get-caller-identity
+```
+
+## 1. 创建或确认 GitHub OIDC Provider
+
+先确认 Provider 是否已经存在。若不存在，再创建它；audience 必须是 `sts.amazonaws.com`。
+
+```bash
+aws iam get-open-id-connect-provider \
+  --open-id-connect-provider-arn arn:aws:iam::890742583014:oidc-provider/token.actions.githubusercontent.com \
+  || aws iam create-open-id-connect-provider \
+    --url https://token.actions.githubusercontent.com \
+    --client-id-list sts.amazonaws.com \
+    --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+```
+
+## 2. 创建 GitHub 部署角色
+
+角色 `GitHubActionsPerpDashboardDeployRole` 的信任策略严格限定为仓库 `HarukiShirato/real-time-monitoring-for-perpetual-contracts` 的 `master` 分支。
+
+```bash
+aws iam create-role \
+  --role-name GitHubActionsPerpDashboardDeployRole \
+  --assume-role-policy-document file://ops/aws/github-oidc-trust-policy.json
+```
+
+若角色已经存在，先检查其信任策略与 `github-oidc-trust-policy.json` 完全一致，而不是创建第二个角色。
+
+## 3. 绑定最小 SSM 权限
+
+此内联策略只允许向 `i-0d3456ec595259c39` 使用 `AWS-RunShellScript`，以及读取命令状态。
+
+```bash
+aws iam put-role-policy \
+  --role-name GitHubActionsPerpDashboardDeployRole \
+  --policy-name GitHubActionsPerpDashboardDeploy \
+  --policy-document file://ops/aws/github-deploy-permissions.json
+```
+
+## 4. 确认 EC2 已受 SSM 管理
+
+```bash
+aws ssm describe-instance-information \
+  --region ap-northeast-1 \
+  --filters Key=InstanceIds,Values=i-0d3456ec595259c39
+```
+
+输出必须包含目标实例，且 `PingStatus` 为 `Online`。若没有，请先在该实例上修复 SSM Agent 和实例角色；不要扩大 GitHub 部署角色的权限范围。
+
+## 5. 发送无副作用的连通性验证
+
+下面命令只输出 `ssm-ready`，不修改服务器文件或服务：
+
+```bash
+aws ssm send-command \
+  --region ap-northeast-1 \
+  --instance-ids i-0d3456ec595259c39 \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["printf ssm-ready"]'
+```
+
+记下返回的 `CommandId`，再用 AWS 控制台或 `aws ssm get-command-invocation` 确认其状态为 `Success`。这一步完成后，GitHub Actions 才可以用 OIDC 获得短期凭证并调用受限的 SSM 命令。

@@ -124,6 +124,33 @@ try {
 NODE
 }
 
+validate_aws_setup_documentation() {
+  local file="$1"
+
+  node - "$file" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+const source = fs.readFileSync(file, 'utf8');
+const required = [
+  'GitHubActionsPerpDashboardDeployRole',
+  'aws iam create-open-id-connect-provider',
+  'aws iam create-role',
+  'aws iam put-role-policy',
+  'aws ssm describe-instance-information',
+  'aws ssm send-command',
+  '--region ap-northeast-1',
+  '--instance-ids i-0d3456ec595259c39',
+  '--document-name AWS-RunShellScript',
+  "--parameters 'commands=[\"printf ssm-ready\"]'",
+];
+const missing = required.filter((value) => !source.includes(value));
+if (missing.length) {
+  console.error(`${file}: missing required AWS setup instructions: ${missing.join(', ')}`);
+  process.exit(1);
+}
+NODE
+}
+
 contains_all() {
   local file="$1"
   shift
@@ -195,6 +222,10 @@ fi
 
 if require_file ops/aws/github-deploy-permissions.json; then
   validate_json_policy ops/aws/github-deploy-permissions.json permissions || fail 'invalid SSM deployment permissions policy'
+fi
+
+if require_file ops/aws/README.md; then
+  validate_aws_setup_documentation ops/aws/README.md || fail 'invalid AWS setup documentation'
 fi
 
 if require_file .github/workflows/deploy-production.yml; then

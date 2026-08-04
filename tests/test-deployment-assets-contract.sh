@@ -38,6 +38,18 @@ const permissions = {
 };
 write('ops/aws/github-oidc-trust-policy.json', JSON.stringify(trust));
 write('ops/aws/github-deploy-permissions.json', JSON.stringify(permissions));
+write('ops/aws/README.md', [
+  'GitHubActionsPerpDashboardDeployRole',
+  'aws iam create-open-id-connect-provider',
+  'aws iam create-role',
+  'aws iam put-role-policy',
+  'aws ssm describe-instance-information',
+  'aws ssm send-command',
+  '--region ap-northeast-1',
+  '--instance-ids i-0d3456ec595259c39',
+  '--document-name AWS-RunShellScript',
+  "--parameters 'commands=[\"printf ssm-ready\"]'",
+].join('\\n'));
 write('.github/workflows/deploy-production.yml', 'permissions:\n  id-token: write\nconcurrency:\n  cancel-in-progress: false\n');
 write('scripts/deploy-production.sh', '#!/usr/bin/env bash\nflock\nnpm ci\nnpm run build\npm2 reload\ndata.dvcapital.xyz\n');
 write('scripts/migrate-production-layout.sh', '#!/usr/bin/env bash\n');
