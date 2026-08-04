@@ -157,7 +157,7 @@ scan_for_secrets() {
   if ! node - "${paths[@]}" <<'NODE'
 const fs = require('fs');
 const paths = process.argv.slice(2);
-const names = /(?:['"])?\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)(?:['"])?\s*[:=]\s*(.*?)\s*(?:#.*)?$/i;
+const assignments = /(?:['"])?\bAWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)(?:['"])?\s*[:=]\s*(?:(['"])(.*?)\1|([^\s,;]+))/gi;
 const files = [];
 for (const path of paths) {
   const stat = fs.statSync(path);
@@ -177,10 +177,10 @@ for (const file of files) {
     continue;
   }
   for (const line of lines) {
-    const match = line.match(names);
-    if (!match) continue;
-    const value = match[1].trim().replace(/^['"]|['"]$/g, '').trim();
-    if (value && !value.startsWith('$')) process.exit(1);
+    for (const match of line.matchAll(assignments)) {
+      const value = (match[2] ?? match[3] ?? '').trim();
+      if (value && !value.startsWith('$')) process.exit(1);
+    }
   }
 }
 NODE

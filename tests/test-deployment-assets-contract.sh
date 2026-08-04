@@ -121,4 +121,12 @@ NODE
 expect_fail "$fixture" 'quoted JSON or JavaScript secret assignment'
 rm -rf "$fixture"
 
+fixture="$(make_fixture)"
+node - "$fixture/ecosystem.config.cjs" <<'NODE'
+const fs = require('fs');
+fs.writeFileSync(process.argv[2], 'module.exports = { "AWS_ACCESS_KEY_ID": "$AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY": "plain-test-value" };\n');
+NODE
+expect_fail "$fixture" 'hard-coded secret after a safe reference on the same line'
+rm -rf "$fixture"
+
 echo 'deployment asset contract tests passed'
